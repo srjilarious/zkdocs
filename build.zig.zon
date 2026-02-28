@@ -1,0 +1,6 @@
+.{
+    .name = .zkdocs,
+    .version = "0.1.0",
+    .fingerprint = 0x858a3df34daf0ee0,
+    .paths = .{ "." },
+}
