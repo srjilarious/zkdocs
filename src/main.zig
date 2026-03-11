@@ -1,5 +1,6 @@
 const std = @import("std");
 const symbols = @import("symbols");
+const render = @import("render");
 const zargs = @import("zargunaught");
 
 pub fn main() !void {
@@ -36,14 +37,20 @@ pub fn main() !void {
     }
 
     const root_path = args.optionValOrDefault("root", "sample.zig");
+    const project_name = args.optionValOrDefault("name", "Documentation");
 
     const modules = try symbols.extractModuleGraph(allocator, root_path);
     defer symbols.deinitModules(allocator, modules);
 
-    for (modules) |mod| {
-        std.debug.print("=== module '{s}' ===\n    path: {s}\n", .{ mod.name, mod.path });
-        printSymbols(mod.symbols.items, 1);
-        std.debug.print("\n", .{});
+    if (args.optionVal("out")) |out_path| {
+        try render.renderSite(allocator, out_path, project_name, modules);
+        std.debug.print("Generated docs in '{s}/'\n", .{out_path});
+    } else {
+        for (modules) |mod| {
+            std.debug.print("=== module '{s}' ===\n    path: {s}\n", .{ mod.name, mod.path });
+            printSymbols(mod.symbols.items, 1);
+            std.debug.print("\n", .{});
+        }
     }
 }
 

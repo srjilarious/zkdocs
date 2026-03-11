@@ -11,6 +11,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/symbols.zig"),
     });
 
+    const render_mod = b.addModule("render", .{
+        .root_source_file = b.path("src/render.zig"),
+    });
+    render_mod.addImport("symbols", symbols_mod);
+
     const exe = b.addExecutable(.{
         .name = "zkdocs",
         .root_module = b.createModule(.{
@@ -20,6 +25,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addImport("symbols", symbols_mod);
+    exe.root_module.addImport("render", render_mod);
     exe.root_module.addImport("zargunaught", zargunaught_dep.module("zargunaught"));
 
     b.installArtifact(exe);
