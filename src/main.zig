@@ -6,39 +6,70 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const path = "sample.zig";
-    const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
-    defer allocator.free(source);
+    const root_path = "sample.zig";
 
-    const source_null = try allocator.dupeZ(u8, source);
-    defer allocator.free(source_null);
+    const modules = try symbols.extractModuleGraph(allocator, root_path);
+    defer symbols.deinitModules(allocator, modules);
 
-    var tree = try std.zig.Ast.parse(allocator, source_null, .zig);
-    defer tree.deinit(allocator);
+    for (modules) |mod| {
+        std.debug.print("=== module '{s}' ===\n    path: {s}\n", .{ mod.name, mod.path });
+        printSymbols(mod.symbols.items, 1);
+        std.debug.print("\n", .{});
+    }
+}
 
-    var module = try symbols.extractModule(allocator, &tree, "sample");
-    defer symbols.deinitModule(allocator, &module);
+fn printDoc(pfx: []const u8, extra: []const u8, doc: []const u8) void {
+    var rest = doc;
+    while (rest.len > 0) {
+        const pos = std.mem.indexOfScalar(u8, rest, '\n');
+        const line = if (pos) |p| rest[0..p] else rest;
+        rest = if (pos) |p| rest[p + 1 ..] else "";
+        std.debug.print("{s}{s}// {s}\n", .{ pfx, extra, line });
+    }
+}
 
-    std.debug.print("Module: {s}\n", .{module.name});
-    for (module.symbols.items) |sym| {
+fn printSymbols(syms: []const symbols.Symbol, depth: usize) void {
+    var buf: [32]u8 = undefined;
+    const pfx = buf[0 .. @min(depth * 2, buf.len)];
+    @memset(pfx, ' ');
+
+    for (syms) |sym| {
         switch (sym.kind) {
             .function => if (sym.function) |f| {
-                std.debug.print("  fn {s} ({d} params)", .{ f.name, f.params.len });
-                if (f.is_pub) std.debug.print(" pub", .{});
-                if (f.doc) |d| std.debug.print(" doc: {s}", .{d});
+                if (f.doc) |d| printDoc(pfx, "", d);
+                std.debug.print("{s}fn {s}(", .{ pfx, f.name });
+                for (f.params, 0..) |p, i| {
+                    if (i > 0) std.debug.print(", ", .{});
+                    if (p.name) |n| std.debug.print("{s}: ", .{n});
+                    std.debug.print("{s}", .{p.type_src});
+                }
+                std.debug.print(")", .{});
+                if (f.return_type_src) |r| std.debug.print(" {s}", .{r});
+                if (f.is_pub) std.debug.print("  [pub]", .{});
                 std.debug.print("\n", .{});
             },
             .variable => if (sym.variable) |v| {
-                std.debug.print("  var {s}", .{v.name});
-                if (v.is_pub) std.debug.print(" pub", .{});
-                if (v.doc) |d| std.debug.print(" doc: {s}", .{d});
+                if (v.doc) |d| printDoc(pfx, "", d);
+                std.debug.print("{s}const {s}", .{ pfx, v.name });
+                if (v.type_src) |t| std.debug.print(": {s}", .{t});
+                if (v.is_pub) std.debug.print("  [pub]", .{});
                 std.debug.print("\n", .{});
             },
             .container => if (sym.container) |c| {
-                std.debug.print("  container {s}", .{c.name});
-                if (c.is_pub) std.debug.print(" pub", .{});
-                if (c.doc) |d| std.debug.print(" doc: {s}", .{d});
+                if (c.doc) |d| printDoc(pfx, "", d);
+                std.debug.print("{s}{s} {s}", .{ pfx, @tagName(c.kind), c.name });
+                if (c.is_pub) std.debug.print("  [pub]", .{});
                 std.debug.print("\n", .{});
+                for (c.fields) |f| {
+                    if (f.doc) |d| printDoc(pfx, "  ", d);
+                    std.debug.print("{s}  .{s}", .{ pfx, f.name });
+                    if (f.type_src) |t| std.debug.print(": {s}", .{t});
+                    std.debug.print("\n", .{});
+                }
+                if (c.decls.items.len > 0) {
+                    std.debug.print("{s}  --- decls ---\n", .{pfx});
+                    printSymbols(c.decls.items, depth + 1);
+                }
             },
             else => {},
         }

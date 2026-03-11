@@ -1,5 +1,9 @@
 const std = @import("std");
 
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
 pub const SymbolKind = enum {
     function,
     variable,
@@ -21,11 +25,22 @@ pub const Function = struct {
     is_pub: bool,
 };
 
+pub const ContainerKind = enum { @"struct", @"enum", @"union", @"opaque" };
+
+pub const Field = struct {
+    name: []const u8,
+    type_src: ?[]const u8,
+    doc: ?[]const u8,
+};
+
 pub const Container = struct {
     name: []const u8,
+    kind: ContainerKind,
     doc: ?[]const u8,
     is_pub: bool,
-    members: std.ArrayListUnmanaged(Symbol),
+    fields: []const Field,
+    /// Nested functions and types declared inside the container.
+    decls: std.ArrayListUnmanaged(Symbol),
 };
 
 pub const Variable = struct {
@@ -44,35 +59,104 @@ pub const Symbol = struct {
 
 pub const Module = struct {
     name: []const u8,
+    path: []const u8,
     symbols: std.ArrayListUnmanaged(Symbol),
 };
 
-fn getDocCommentBefore(tree: std.zig.Ast, first_token: std.zig.Ast.TokenIndex) ?[]const u8 {
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+/// Collect the doc comment block immediately preceding `first_token`.
+/// Scans backwards, skipping declaration modifier keywords, then collects
+/// all consecutive `.doc_comment` tokens. Strips the `/// ` prefix from each
+/// line and joins them with `\n`. Returns null if no doc comment is found.
+fn collectDocComment(
+    allocator: std.mem.Allocator,
+    tree: std.zig.Ast,
+    first_token: std.zig.Ast.TokenIndex,
+) !?[]u8 {
     if (first_token == 0) return null;
-    var i = first_token - 1;
-    while (i > 0) : (i -= 1) {
-        const tag = tree.tokenTag(i);
-        if (tag == .string_literal or tag == .doc_comment) {
-            return tree.tokenSlice(i);
-        }
-        switch (tag) {
-            .container_doc_comment => continue,
-            else => break,
+
+    // Scan backwards from first_token looking for the last doc_comment token.
+    // `first_token` is already the first token of the whole declaration
+    // (including `pub`, `extern`, etc.), so modifier keywords may appear
+    // between the doc comment and first_token.
+    var last_doc: ?std.zig.Ast.TokenIndex = null;
+    {
+        var i: std.zig.Ast.TokenIndex = first_token;
+        while (i > 0) {
+            i -= 1;
+            switch (tree.tokenTag(i)) {
+                .doc_comment => {
+                    last_doc = i;
+                    break;
+                },
+                .keyword_pub,
+                .keyword_extern,
+                .keyword_export,
+                .keyword_inline,
+                .keyword_noinline,
+                .keyword_comptime,
+                .keyword_threadlocal,
+                .string_literal,
+                => {},
+                else => break,
+            }
         }
     }
-    return null;
+    const last = last_doc orelse return null;
+
+    // Walk further back to find the start of the consecutive doc_comment block.
+    var first = last;
+    while (first > 0) {
+        const prev = first - 1;
+        if (tree.tokenTag(prev) == .doc_comment) {
+            first = prev;
+        } else break;
+    }
+
+    // Concatenate lines, stripping the `/// ` or `///` prefix.
+    // In Zig 0.15, ArrayList is unmanaged; all methods take the allocator.
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
+
+    var idx: std.zig.Ast.TokenIndex = first;
+    while (idx <= last) : (idx += 1) {
+        const raw = tree.tokenSlice(idx);
+        const text = if (std.mem.startsWith(u8, raw, "/// "))
+            raw[4..]
+        else if (std.mem.startsWith(u8, raw, "///"))
+            raw[3..]
+        else
+            raw;
+        if (buf.items.len > 0) try buf.append(allocator, '\n');
+        try buf.appendSlice(allocator, text);
+    }
+
+    if (buf.items.len == 0) return null;
+    return try buf.toOwnedSlice(allocator);
 }
 
 fn isPub(tree: std.zig.Ast, first_token: std.zig.Ast.TokenIndex) bool {
+    // `first_token` may itself be the `pub` token (e.g. when tree.firstToken()
+    // returns the visib_token of a fn_proto or var_decl).
+    if (tree.tokenTag(first_token) == .keyword_pub) return true;
     if (first_token == 0) return false;
-    var i = first_token;
+    var i: std.zig.Ast.TokenIndex = first_token;
     while (i > 0) {
         i -= 1;
         if (tree.tokenTag(i) == .keyword_pub) return true;
         switch (tree.tokenTag(i)) {
-            .keyword_extern, .keyword_export, .keyword_inline, .keyword_noinline,
-            .keyword_comptime, .keyword_threadlocal, .string_literal, .doc_comment,
-            => continue,
+            .keyword_extern,
+            .keyword_export,
+            .keyword_inline,
+            .keyword_noinline,
+            .keyword_comptime,
+            .keyword_threadlocal,
+            .string_literal,
+            .doc_comment,
+            => {},
             else => break,
         }
     }
@@ -87,171 +171,401 @@ fn nodeToSource(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) []const u8 {
     return tree.source[start_byte..end_byte];
 }
 
-pub fn extractModule(
+fn isContainerTag(tag: std.zig.Ast.Node.Tag) bool {
+    return switch (tag) {
+        .container_decl,
+        .container_decl_trailing,
+        .container_decl_two,
+        .container_decl_two_trailing,
+        .container_decl_arg,
+        .container_decl_arg_trailing,
+        .tagged_union,
+        .tagged_union_trailing,
+        .tagged_union_two,
+        .tagged_union_two_trailing,
+        .tagged_union_enum_tag,
+        .tagged_union_enum_tag_trailing,
+        => true,
+        else => false,
+    };
+}
+
+fn getContainerKind(tree: std.zig.Ast, cd: std.zig.Ast.full.ContainerDecl) ContainerKind {
+    return switch (tree.tokenTag(cd.ast.main_token)) {
+        .keyword_struct => .@"struct",
+        .keyword_enum => .@"enum",
+        .keyword_union => .@"union",
+        .keyword_opaque => .@"opaque",
+        else => .@"struct",
+    };
+}
+
+/// If `node` is a `@import("./relative/path.zig")` call, return the path
+/// string (without quotes). Returns null otherwise or for non-relative imports.
+fn getImportPath(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) ?[]const u8 {
+    const tag = tree.nodeTag(node);
+    if (tag != .builtin_call_two and tag != .builtin_call_two_comma) return null;
+
+    const main_tok = tree.nodeMainToken(node);
+    if (!std.mem.eql(u8, tree.tokenSlice(main_tok), "@import")) return null;
+
+    var buf: [2]std.zig.Ast.Node.Index = undefined;
+    const params = tree.builtinCallParams(&buf, node) orelse return null;
+    if (params.len != 1) return null;
+
+    const arg_tok = tree.nodeMainToken(params[0]);
+    if (tree.tokenTag(arg_tok) != .string_literal) return null;
+
+    const raw = tree.tokenSlice(arg_tok);
+    if (raw.len < 2) return null;
+    const inner = raw[1 .. raw.len - 1]; // strip surrounding quotes
+
+    // Only follow relative imports.
+    if (!std.mem.startsWith(u8, inner, "./") and
+        !std.mem.startsWith(u8, inner, "../")) return null;
+
+    return inner;
+}
+
+fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
+    switch (sym.kind) {
+        .function => if (sym.function) |*f| {
+            allocator.free(f.name);
+            for (f.params) |p| {
+                if (p.name) |n| allocator.free(n);
+                allocator.free(p.type_src);
+            }
+            allocator.free(f.params);
+            if (f.return_type_src) |s| allocator.free(s);
+            if (f.doc) |s| allocator.free(s);
+        },
+        .variable => if (sym.variable) |*v| {
+            allocator.free(v.name);
+            if (v.type_src) |s| allocator.free(s);
+            if (v.doc) |s| allocator.free(s);
+        },
+        .container => if (sym.container) |*c| {
+            allocator.free(c.name);
+            if (c.doc) |s| allocator.free(s);
+            for (c.fields) |f| {
+                allocator.free(f.name);
+                if (f.type_src) |s| allocator.free(s);
+                if (f.doc) |s| allocator.free(s);
+            }
+            allocator.free(c.fields);
+            for (c.decls.items) |*d| deinitSymbol(allocator, d);
+            c.decls.deinit(allocator);
+        },
+        else => {},
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Symbol extractors
+// ---------------------------------------------------------------------------
+
+/// Extract a function symbol from a fn_decl or fn_proto_* node.
+/// Computes doc and is_pub from the node's first token.
+fn extractFnSymbol(
     allocator: std.mem.Allocator,
     tree: *const std.zig.Ast,
-    module_name: []const u8,
-) !Module {
-    var module: Module = .{
-        .name = module_name,
-        .symbols = .{},
+    node: std.zig.Ast.Node.Index,
+) !Symbol {
+    const first_tok = tree.firstToken(node);
+    const doc = try collectDocComment(allocator, tree.*, first_tok);
+    errdefer if (doc) |d| allocator.free(d);
+    const is_pub = isPub(tree.*, first_tok);
+
+    var fn_buf: [1]std.zig.Ast.Node.Index = undefined;
+    const proto = tree.fullFnProto(&fn_buf, node).?;
+
+    const name = if (proto.name_token) |nt|
+        try allocator.dupe(u8, tree.tokenSlice(nt))
+    else
+        try allocator.dupe(u8, "(anonymous)");
+    errdefer allocator.free(name);
+
+    var params_list = std.ArrayList(Param){};
+    errdefer {
+        for (params_list.items) |p| {
+            if (p.name) |n| allocator.free(n);
+            allocator.free(p.type_src);
+        }
+        params_list.deinit(allocator);
+    }
+
+    var it = proto.iterate(tree);
+    while (it.next()) |p| {
+        const param_name: ?[]const u8 = if (p.name_token) |nt|
+            try allocator.dupe(u8, tree.tokenSlice(nt))
+        else
+            null;
+        errdefer if (param_name) |n| allocator.free(n);
+
+        const type_src = if (p.type_expr) |tn|
+            try allocator.dupe(u8, nodeToSource(tree.*, tn))
+        else
+            try allocator.dupe(u8, "anytype");
+        errdefer allocator.free(type_src);
+
+        try params_list.append(allocator, .{ .name = param_name, .type_src = type_src });
+    }
+
+    const return_type_src: ?[]const u8 = if (proto.ast.return_type != .none)
+        try allocator.dupe(u8, nodeToSource(tree.*, proto.ast.return_type.unwrap().?))
+    else
+        null;
+
+    return .{
+        .kind = .function,
+        .function = .{
+            .name = name,
+            .params = try params_list.toOwnedSlice(allocator),
+            .return_type_src = return_type_src,
+            .doc = doc,
+            .is_pub = is_pub,
+        },
     };
-    errdefer module.symbols.deinit(allocator);
+}
 
-    var fn_proto_buffer: [1]std.zig.Ast.Node.Index = undefined;
-    var container_buffer: [2]std.zig.Ast.Node.Index = undefined;
+/// Extract a container symbol from a container_decl_* or tagged_union_* node.
+/// `name` must be an already-allocated string; ownership is transferred to this
+/// function (freed on error, owned by the returned Symbol on success).
+/// `first_decl_tok` is the first token of the outer var_decl, used to locate
+/// the doc comment.
+fn extractContainerSymbol(
+    allocator: std.mem.Allocator,
+    tree: *const std.zig.Ast,
+    container_node: std.zig.Ast.Node.Index,
+    name: []u8,
+    first_decl_tok: std.zig.Ast.TokenIndex,
+    is_pub: bool,
+) !Symbol {
+    errdefer allocator.free(name);
 
-    const decls = tree.rootDecls();
-    for (decls) |decl_index| {
-        const tag = tree.nodeTag(decl_index);
-        const first_tok = tree.firstToken(decl_index);
-        const doc = getDocCommentBefore(tree.*, first_tok);
-        const is_public = isPub(tree.*, first_tok);
+    const doc = try collectDocComment(allocator, tree.*, first_decl_tok);
+    errdefer if (doc) |d| allocator.free(d);
 
-        switch (tag) {
-            .fn_decl => {
-                const proto_node = tree.nodeData(decl_index).node_and_node[0];
-                if (tree.fullFnProto(&fn_proto_buffer, proto_node)) |proto| {
-                    const name = if (proto.name_token) |nt|
-                        try allocator.dupe(u8, tree.tokenSlice(nt))
-                    else
-                        try allocator.dupe(u8, "(anonymous)");
-                    errdefer allocator.free(name);
+    var cd_buf: [2]std.zig.Ast.Node.Index = undefined;
+    const cd = tree.fullContainerDecl(&cd_buf, container_node).?;
+    const kind = getContainerKind(tree.*, cd);
 
-                    var params = try std.ArrayList(Param).initCapacity(allocator, 0);
-                    defer params.deinit(allocator);
+    var fields_list = std.ArrayList(Field){};
+    errdefer {
+        for (fields_list.items) |f| {
+            allocator.free(f.name);
+            if (f.type_src) |s| allocator.free(s);
+            if (f.doc) |s| allocator.free(s);
+        }
+        fields_list.deinit(allocator);
+    }
 
-                    var it = proto.iterate(tree);
-                    while (it.next()) |p| {
-                        const param_name: ?[]const u8 = if (p.name_token) |nt|
-                            try allocator.dupe(u8, tree.tokenSlice(nt))
-                        else
-                            null;
-                        const type_src = if (p.type_expr) |tn|
-                            try allocator.dupe(u8, nodeToSource(tree.*, tn))
-                        else
-                            try allocator.dupe(u8, "anytype");
-                        try params.append(allocator, .{
-                            .name = param_name,
-                            .type_src = type_src,
-                        });
-                    }
+    var decls_list = std.ArrayListUnmanaged(Symbol){};
+    errdefer {
+        for (decls_list.items) |*s| deinitSymbol(allocator, s);
+        decls_list.deinit(allocator);
+    }
 
-                    const return_type_src: ?[]const u8 = if (proto.ast.return_type != .none)
-                        try allocator.dupe(u8, nodeToSource(tree.*, proto.ast.return_type.unwrap().?))
-                    else
-                        null;
-                    const doc_dup = if (doc) |d| try allocator.dupe(u8, d) else null;
+    for (cd.ast.members) |member| {
+        const member_tag = tree.nodeTag(member);
+        switch (member_tag) {
+            // --- fields ---
+            .container_field,
+            .container_field_init,
+            .container_field_align,
+            => {
+                var cf = tree.fullContainerField(member).?;
+                // Convert enum-style "tuple-like" fields (e.g. `enum { red }`)
+                // into named fields so `main_token` holds the member name and
+                // `type_expr` is cleared.
+                cf.convertToNonTupleLike(tree);
+                const field_doc = try collectDocComment(allocator, tree.*, cf.firstToken());
+                errdefer if (field_doc) |d| allocator.free(d);
 
-                    try module.symbols.append(allocator, .{
-                        .kind = .function,
-                        .function = .{
-                            .name = name,
-                            .params = try params.toOwnedSlice(allocator),
-                            .return_type_src = return_type_src,
-                            .doc = doc_dup,
-                            .is_pub = is_public,
-                        },
-                    });
-                }
+                const field_name = if (!cf.ast.tuple_like)
+                    try allocator.dupe(u8, tree.tokenSlice(cf.ast.main_token))
+                else
+                    try allocator.dupe(u8, "_");
+                errdefer allocator.free(field_name);
+
+                const type_src: ?[]const u8 = if (cf.ast.type_expr.unwrap()) |tn|
+                    try allocator.dupe(u8, nodeToSource(tree.*, tn))
+                else
+                    null;
+                errdefer if (type_src) |s| allocator.free(s);
+
+                try fields_list.append(allocator, .{
+                    .name = field_name,
+                    .type_src = type_src,
+                    .doc = field_doc,
+                });
             },
+            // --- methods / associated functions ---
+            .fn_decl,
             .fn_proto_simple,
             .fn_proto_multi,
             .fn_proto_one,
             .fn_proto,
             => {
-                if (tree.fullFnProto(&fn_proto_buffer, decl_index)) |proto| {
-                    const name = if (proto.name_token) |nt|
-                        try allocator.dupe(u8, tree.tokenSlice(nt))
-                    else
-                        try allocator.dupe(u8, "(anonymous)");
-                    errdefer allocator.free(name);
-
-                    var params = try std.ArrayList(Param).initCapacity(allocator, 0);
-                    defer params.deinit(allocator);
-                    var it = proto.iterate(tree);
-                    while (it.next()) |p| {
-                        const type_src = if (p.type_expr) |tn|
-                            try allocator.dupe(u8, nodeToSource(tree.*, tn))
-                        else
-                            try allocator.dupe(u8, "anytype");
-                        try params.append(allocator, .{
-                            .name = null,
-                            .type_src = type_src,
-                        });
-                    }
-
-                    const return_type_src: ?[]const u8 = if (proto.ast.return_type != .none)
-                        try allocator.dupe(u8, nodeToSource(tree.*, proto.ast.return_type.unwrap().?))
-                    else
-                        null;
-                    const doc_dup = if (doc) |d| try allocator.dupe(u8, d) else null;
-
-                    try module.symbols.append(allocator, .{
-                        .kind = .function,
-                        .function = .{
-                            .name = name,
-                            .params = try params.toOwnedSlice(allocator),
-                            .return_type_src = return_type_src,
-                            .doc = doc_dup,
-                            .is_pub = is_public,
-                        },
-                    });
-                }
+                const sym = try extractFnSymbol(allocator, tree, member);
+                errdefer deinitSymbol(allocator, @constCast(&sym));
+                try decls_list.append(allocator, sym);
             },
-            .container_decl,
-            .container_decl_trailing,
-            .container_decl_two,
-            .container_decl_two_trailing,
-            .container_decl_arg,
-            .container_decl_arg_trailing,
-            .tagged_union,
-            .tagged_union_trailing,
-            .tagged_union_two,
-            .tagged_union_two_trailing,
-            .tagged_union_enum_tag,
-            .tagged_union_enum_tag_trailing,
-            => {
-                if (tree.fullContainerDecl(&container_buffer, decl_index)) |container_decl| {
-                    const main_token = container_decl.ast.main_token;
-                    const name = try allocator.dupe(u8, tree.tokenSlice(main_token));
-                    const doc_dup = if (doc) |d| try allocator.dupe(u8, d) else null;
-                    try module.symbols.append(allocator, .{
-                        .kind = .container,
-                        .container = .{
-                            .name = name,
-                            .doc = doc_dup,
-                            .is_pub = is_public,
-                            .members = .{},
-                        },
-                    });
-                }
-            },
+            // Nested types (pub const Inner = struct { ... }) inside containers
             .global_var_decl,
             .local_var_decl,
             .simple_var_decl,
             .aligned_var_decl,
             => {
-                if (tree.fullVarDecl(decl_index)) |var_decl| {
-                    const mut_tok = var_decl.ast.mut_token;
-                    const name_tok = mut_tok + 1;
-                    const name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
-                    const type_src: ?[]const u8 = if (var_decl.ast.type_node != .none)
-                        try allocator.dupe(u8, nodeToSource(tree.*, var_decl.ast.type_node.unwrap().?))
-                    else
-                        null;
-                    const doc_dup = if (doc) |d| try allocator.dupe(u8, d) else null;
-                    try module.symbols.append(allocator, .{
-                        .kind = .variable,
-                        .variable = .{
-                            .name = name,
-                            .type_src = type_src,
-                            .doc = doc_dup,
-                            .is_pub = is_public,
-                        },
-                    });
+                const var_decl = tree.fullVarDecl(member) orelse continue;
+                const member_first_tok = tree.firstToken(member);
+                const member_pub = isPub(tree.*, member_first_tok);
+                const name_tok = var_decl.ast.mut_token + 1;
+
+                if (var_decl.ast.init_node.unwrap()) |init_node| {
+                    if (isContainerTag(tree.nodeTag(init_node))) {
+                        const nested_name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
+                        const sym = try extractContainerSymbol(
+                            allocator,
+                            tree,
+                            init_node,
+                            nested_name,
+                            member_first_tok,
+                            member_pub,
+                        );
+                        errdefer deinitSymbol(allocator, @constCast(&sym));
+                        try decls_list.append(allocator, sym);
+                        continue;
+                    }
                 }
+
+                // Plain variable / constant inside the container.
+                const nested_name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
+                errdefer allocator.free(nested_name);
+                const nested_doc = try collectDocComment(allocator, tree.*, member_first_tok);
+                errdefer if (nested_doc) |d| allocator.free(d);
+                const type_src: ?[]const u8 = if (var_decl.ast.type_node.unwrap()) |tn|
+                    try allocator.dupe(u8, nodeToSource(tree.*, tn))
+                else
+                    null;
+                errdefer if (type_src) |s| allocator.free(s);
+                try decls_list.append(allocator, .{
+                    .kind = .variable,
+                    .variable = .{
+                        .name = nested_name,
+                        .type_src = type_src,
+                        .doc = nested_doc,
+                        .is_pub = member_pub,
+                    },
+                });
             },
+            else => {},
+        }
+    }
+
+    return .{
+        .kind = .container,
+        .container = .{
+            .name = name,
+            .kind = kind,
+            .doc = doc,
+            .is_pub = is_pub,
+            .fields = try fields_list.toOwnedSlice(allocator),
+            .decls = decls_list,
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Parse a single Zig source tree into a Module.
+/// Both `module_name` and `file_path` are duped; the caller retains ownership
+/// of the originals.
+pub fn extractModule(
+    allocator: std.mem.Allocator,
+    tree: *const std.zig.Ast,
+    module_name: []const u8,
+    file_path: []const u8,
+) !Module {
+    var module: Module = .{
+        .name = try allocator.dupe(u8, module_name),
+        .path = try allocator.dupe(u8, file_path),
+        .symbols = .{},
+    };
+    errdefer {
+        allocator.free(module.name);
+        allocator.free(module.path);
+        module.symbols.deinit(allocator);
+    }
+
+    for (tree.rootDecls()) |decl_index| {
+        const tag = tree.nodeTag(decl_index);
+        const first_tok = tree.firstToken(decl_index);
+
+        switch (tag) {
+            // --- functions ---
+            .fn_decl,
+            .fn_proto_simple,
+            .fn_proto_multi,
+            .fn_proto_one,
+            .fn_proto,
+            => {
+                const sym = try extractFnSymbol(allocator, tree, decl_index);
+                errdefer deinitSymbol(allocator, @constCast(&sym));
+                try module.symbols.append(allocator, sym);
+            },
+
+            // --- variable / const declarations (including named containers) ---
+            .global_var_decl,
+            .local_var_decl,
+            .simple_var_decl,
+            .aligned_var_decl,
+            => {
+                const var_decl = tree.fullVarDecl(decl_index) orelse continue;
+                const is_pub = isPub(tree.*, first_tok);
+                const name_tok = var_decl.ast.mut_token + 1;
+
+                // Check whether the initialiser is a container.
+                if (var_decl.ast.init_node.unwrap()) |init_node| {
+                    if (isContainerTag(tree.nodeTag(init_node))) {
+                        const name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
+                        const sym = try extractContainerSymbol(
+                            allocator,
+                            tree,
+                            init_node,
+                            name,
+                            first_tok,
+                            is_pub,
+                        );
+                        errdefer deinitSymbol(allocator, @constCast(&sym));
+                        try module.symbols.append(allocator, sym);
+                        continue;
+                    }
+                }
+
+                // Plain variable / constant.
+                const name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
+                errdefer allocator.free(name);
+                const doc = try collectDocComment(allocator, tree.*, first_tok);
+                errdefer if (doc) |d| allocator.free(d);
+                const type_src: ?[]const u8 = if (var_decl.ast.type_node.unwrap()) |tn|
+                    try allocator.dupe(u8, nodeToSource(tree.*, tn))
+                else
+                    null;
+                errdefer if (type_src) |s| allocator.free(s);
+                try module.symbols.append(allocator, .{
+                    .kind = .variable,
+                    .variable = .{
+                        .name = name,
+                        .type_src = type_src,
+                        .doc = doc,
+                        .is_pub = is_pub,
+                    },
+                });
+            },
+
             else => {},
         }
     }
@@ -260,31 +574,115 @@ pub fn extractModule(
 }
 
 pub fn deinitModule(allocator: std.mem.Allocator, module: *Module) void {
-    for (module.symbols.items) |*sym| {
-        switch (sym.kind) {
-            .function => if (sym.function) |*f| {
-                allocator.free(f.name);
-                for (f.params) |p| {
-                    if (p.name) |n| allocator.free(n);
-                    allocator.free(p.type_src);
-                }
-                allocator.free(f.params);
-                if (f.return_type_src) |s| allocator.free(s);
-                if (f.doc) |s| allocator.free(s);
-            },
-            .variable => if (sym.variable) |*v| {
-                allocator.free(v.name);
-                if (v.type_src) |s| allocator.free(s);
-                if (v.doc) |s| allocator.free(s);
-            },
-            .container => if (sym.container) |*c| {
-                allocator.free(c.name);
-                if (c.doc) |s| allocator.free(s);
-                for (c.members.items) |*m| _ = m;
-                c.members.deinit(allocator);
+    allocator.free(module.name);
+    allocator.free(module.path);
+    for (module.symbols.items) |*sym| deinitSymbol(allocator, sym);
+    module.symbols.deinit(allocator);
+}
+
+pub fn deinitModules(allocator: std.mem.Allocator, modules: []Module) void {
+    for (modules) |*m| deinitModule(allocator, m);
+    allocator.free(modules);
+}
+
+// ---------------------------------------------------------------------------
+// Module graph (import following)
+// ---------------------------------------------------------------------------
+
+/// Walk the AST looking for relative @import paths in root-level var decls.
+fn collectRelativeImports(
+    allocator: std.mem.Allocator,
+    tree: std.zig.Ast,
+    dir_path: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    for (tree.rootDecls()) |decl_index| {
+        const tag = tree.nodeTag(decl_index);
+        switch (tag) {
+            .global_var_decl,
+            .local_var_decl,
+            .simple_var_decl,
+            .aligned_var_decl,
+            => {
+                const var_decl = tree.fullVarDecl(decl_index) orelse continue;
+                const init_node = var_decl.ast.init_node.unwrap() orelse continue;
+                const rel = getImportPath(tree, init_node) orelse continue;
+
+                const joined = try std.fs.path.join(allocator, &.{ dir_path, rel });
+                errdefer allocator.free(joined);
+                try out.append(allocator, joined);
             },
             else => {},
         }
     }
-    module.symbols.deinit(allocator);
+}
+
+fn extractModuleGraphRecurse(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    modules: *std.ArrayList(Module),
+    visited: *std.StringHashMap(void),
+) !void {
+    // Resolve to an absolute path so symlinks / ".." don't create duplicates.
+    const abs_path = try std.fs.cwd().realpathAlloc(allocator, path);
+    defer allocator.free(abs_path);
+
+    const gop = try visited.getOrPut(abs_path);
+    if (gop.found_existing) return;
+    // Take ownership of abs_path for the map key.
+    gop.key_ptr.* = try allocator.dupe(u8, abs_path);
+
+    // Read source.
+    const source = try std.fs.cwd().readFileAlloc(allocator, abs_path, std.math.maxInt(usize));
+    defer allocator.free(source);
+    const source_z = try allocator.dupeZ(u8, source);
+    defer allocator.free(source_z);
+
+    // Parse.
+    var tree = try std.zig.Ast.parse(allocator, source_z, .zig);
+    defer tree.deinit(allocator);
+
+    // Derive module name from the file stem.
+    const module_name = std.fs.path.stem(abs_path);
+
+    var module = try extractModule(allocator, &tree, module_name, abs_path);
+    errdefer deinitModule(allocator, &module);
+    try modules.append(allocator, module);
+
+    // Find and follow relative imports.
+    const dir_path = std.fs.path.dirname(abs_path) orelse ".";
+    var import_paths = std.ArrayList([]const u8){};
+    defer {
+        for (import_paths.items) |p| allocator.free(p);
+        import_paths.deinit(allocator);
+    }
+    try collectRelativeImports(allocator, tree, dir_path, &import_paths);
+
+    for (import_paths.items) |import_path| {
+        try extractModuleGraphRecurse(allocator, import_path, modules, visited);
+    }
+}
+
+/// Extract documentation from the module graph rooted at `root_path`.
+/// Follows relative `@import` chains recursively. Returns a caller-owned
+/// slice; free with `deinitModules`.
+pub fn extractModuleGraph(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+) ![]Module {
+    var modules = std.ArrayList(Module){};
+    errdefer {
+        for (modules.items) |*m| deinitModule(allocator, m);
+        modules.deinit(allocator);
+    }
+
+    var visited = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = visited.keyIterator();
+        while (it.next()) |k| allocator.free(k.*);
+        visited.deinit();
+    }
+
+    try extractModuleGraphRecurse(allocator, root_path, &modules, &visited);
+    return try modules.toOwnedSlice(allocator);
 }
