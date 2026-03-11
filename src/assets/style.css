@@ -181,13 +181,15 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
 .module-list li a:hover { text-decoration: underline; }
 .mod-doc { font-size: .875rem; color: var(--muted); margin-top: .25rem; }
 
-/* ── Highlight stubs (Phase 5) ── */
-.hl-keyword  { color: var(--kw);  }
-.hl-function { color: var(--fn);  }
-.hl-type     { color: var(--type);}
+/* ── Syntax highlighting (Phase 5 — tree-sitter) ── */
+.hl-keyword  { color: var(--kw);   }
+.hl-function { color: var(--fn);   }
+.hl-type     { color: var(--type); }
 .hl-comment  { color: #546e7a; font-style: italic; }
-.hl-string   { color: var(--str); }
-.hl-number   { color: var(--num); }
+.hl-string   { color: var(--str);  }
+.hl-number   { color: var(--num);  }
+.hl-constant { color: var(--num);  }
+.hl-operator { color: var(--muted); }
 
 /* ── Markdown content (symbol docs) ── */
 .symbol-doc p             { margin-bottom: .5rem; }

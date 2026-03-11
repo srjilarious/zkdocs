@@ -7,15 +7,31 @@ pub fn build(b: *std.Build) void {
     const zargunaught_dep = b.dependency("zargunaught", .{});
     const testz_dep = b.dependency("testz", .{});
     const zmd_dep = b.dependency("zmd", .{});
+    const tree_sitter_dep = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const tree_sitter_zig_dep = b.dependency("tree_sitter_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .@"build-shared" = false,
+    });
 
     const symbols_mod = b.addModule("symbols", .{
         .root_source_file = b.path("src/symbols.zig"),
     });
 
+    const highlight_mod = b.addModule("highlight", .{
+        .root_source_file = b.path("src/highlight.zig"),
+    });
+    highlight_mod.addImport("tree_sitter", tree_sitter_dep.module("tree_sitter"));
+    highlight_mod.addImport("tree-sitter-zig", tree_sitter_zig_dep.module("tree-sitter-zig"));
+
     const markdown_mod = b.addModule("markdown", .{
         .root_source_file = b.path("src/markdown.zig"),
     });
     markdown_mod.addImport("zmd", zmd_dep.module("zmd"));
+    markdown_mod.addImport("highlight", highlight_mod);
 
     const render_mod = b.addModule("render", .{
         .root_source_file = b.path("src/render.zig"),
