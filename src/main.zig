@@ -1,12 +1,41 @@
 const std = @import("std");
-const symbols = @import("symbols.zig");
+const symbols = @import("symbols");
+const zargs = @import("zargunaught");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const root_path = "sample.zig";
+    var parser = try zargs.ArgParser.init(allocator, .{
+        .name = "zkdocs",
+        .description = "Generate documentation for Zig projects.",
+        .opts = &.{
+            .{ .longName = "root", .shortName = "r", .description = "Root source file to extract symbols from.", .maxNumParams = 1 },
+            .{ .longName = "name", .shortName = "n", .description = "Display name for the root module.", .maxNumParams = 1 },
+            .{ .longName = "out", .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
+            .{ .longName = "help", .shortName = "h", .description = "Print help information." },
+        },
+    });
+    defer parser.deinit();
+
+    var args = parser.parse() catch |err| {
+        std.debug.print("Error parsing args: {any}\n", .{err});
+        return;
+    };
+    defer args.deinit();
+
+    if (args.hasOption("help")) {
+        var stdout = try zargs.print.Printer.stdout(allocator);
+        defer stdout.deinit();
+        var help = try zargs.help.HelpFormatter.init(&parser, stdout, zargs.help.DefaultTheme, allocator);
+        defer help.deinit();
+        try help.printHelpText();
+        try stdout.flush();
+        return;
+    }
+
+    const root_path = args.optionValOrDefault("root", "sample.zig");
 
     const modules = try symbols.extractModuleGraph(allocator, root_path);
     defer symbols.deinitModules(allocator, modules);
