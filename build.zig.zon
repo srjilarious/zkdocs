@@ -10,5 +10,9 @@
         .testz = .{
             .path = "../testz",
         },
+        .zmd = .{
+            .url = "https://github.com/jetzig-framework/zmd/archive/refs/heads/main.tar.gz",
+            .hash = "zmd-0.1.0-H8YV7V_rAACiIbtOcECYvUcG-KawejQDI1nLR4Pi-fx7",
+        },
     },
 }

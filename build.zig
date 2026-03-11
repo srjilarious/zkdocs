@@ -6,15 +6,22 @@ pub fn build(b: *std.Build) void {
 
     const zargunaught_dep = b.dependency("zargunaught", .{});
     const testz_dep = b.dependency("testz", .{});
+    const zmd_dep = b.dependency("zmd", .{});
 
     const symbols_mod = b.addModule("symbols", .{
         .root_source_file = b.path("src/symbols.zig"),
     });
 
+    const markdown_mod = b.addModule("markdown", .{
+        .root_source_file = b.path("src/markdown.zig"),
+    });
+    markdown_mod.addImport("zmd", zmd_dep.module("zmd"));
+
     const render_mod = b.addModule("render", .{
         .root_source_file = b.path("src/render.zig"),
     });
     render_mod.addImport("symbols", symbols_mod);
+    render_mod.addImport("markdown", markdown_mod);
 
     const exe = b.addExecutable(.{
         .name = "zkdocs",

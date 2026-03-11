@@ -15,6 +15,7 @@ pub fn main() !void {
             .{ .longName = "root", .shortName = "r", .description = "Root source file to extract symbols from.", .maxNumParams = 1 },
             .{ .longName = "name", .shortName = "n", .description = "Display name for the root module.", .maxNumParams = 1 },
             .{ .longName = "out", .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
+            .{ .longName = "docs", .shortName = "d", .description = "Directory with .md guide pages.", .maxNumParams = 1 },
             .{ .longName = "help", .shortName = "h", .description = "Print help information." },
         },
     });
@@ -43,7 +44,8 @@ pub fn main() !void {
     defer symbols.deinitModules(allocator, modules);
 
     if (args.optionVal("out")) |out_path| {
-        try render.renderSite(allocator, out_path, project_name, modules);
+        const docs_dir = args.optionVal("docs");
+        try render.renderSite(allocator, out_path, project_name, modules, docs_dir);
         std.debug.print("Generated docs in '{s}/'\n", .{out_path});
     } else {
         for (modules) |mod| {
