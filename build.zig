@@ -1,4 +1,9 @@
 const std = @import("std");
+const build_helper = @import("src/build_helper.zig");
+
+/// Re-export so consumers that depend on zkdocs as a path dep can call this directly.
+pub const DocsOptions = build_helper.DocsOptions;
+pub const addDocsStep = build_helper.addDocsStep;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -15,6 +20,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .@"build-shared" = false,
+    });
+
+    // Expose the build helper as the "zkdocs" module so consuming projects can
+    // @import("zkdocs") in their build.zig and call addDocsStep.
+    _ = b.addModule("zkdocs", .{
+        .root_source_file = b.path("src/build_helper.zig"),
     });
 
     const symbols_mod = b.addModule("symbols", .{
