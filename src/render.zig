@@ -1,6 +1,7 @@
 const std = @import("std");
 const symbols = @import("symbols");
 const markdown = @import("markdown");
+const emoji = @import("emoji");
 
 const CSS = @embedFile("assets/style.css");
 
@@ -30,9 +31,10 @@ pub fn freeGuides(allocator: std.mem.Allocator, guides: []const GuideEntry) void
 const Buf = struct {
     list: std.ArrayList(u8),
     alloc: std.mem.Allocator,
+    emoji_provider: emoji.Provider,
 
-    fn init(alloc: std.mem.Allocator) Buf {
-        return .{ .list = .{}, .alloc = alloc };
+    fn init(alloc: std.mem.Allocator, provider: emoji.Provider) Buf {
+        return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider };
     }
     fn deinit(self: *Buf) void {
         self.list.deinit(self.alloc);
@@ -72,7 +74,9 @@ fn firstSentence(text: []const u8) []const u8 {
 }
 
 fn writeDoc(buf: *Buf, doc: []const u8) !void {
-    const html = try markdown.toHtml(buf.alloc, doc);
+    const raw = try markdown.toHtml(buf.alloc, doc);
+    defer buf.alloc.free(raw);
+    const html = try emoji.replaceInHtml(buf.alloc, raw, buf.emoji_provider);
     defer buf.alloc.free(html);
     try buf.writeAll("<div class=\"symbol-doc\">");
     try buf.writeAll(html);
@@ -165,8 +169,11 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
     var has_consts = false;
     for (mod.symbols.items) |sym| {
         switch (sym.kind) {
-            .container => if (sym.container) |c| { if (c.is_pub) has_types  = true; },
-            .function  => if (sym.function)  |f| { if (f.is_pub) has_fns    = true; },
+            .container => if (sym.container) |c| { if (c.is_pub) has_types = true; },
+            .function  => if (sym.function)  |f| {
+                if (f.is_pub and f.generic_return != null) has_types = true;
+                if (f.is_pub and f.generic_return == null) has_fns   = true;
+            },
             .variable  => if (sym.variable)  |v| { if (v.is_pub) has_consts = true; },
             else => {},
         }
@@ -189,15 +196,42 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
             // Indented public methods
             var has_methods = false;
             for (c.decls.items) |d| {
-                if (d.kind == .function) if (d.function) |f| { if (f.is_pub) { has_methods = true; break; } };
+                if (d.kind == .function) if (d.function) |mf| { if (mf.is_pub) { has_methods = true; break; } };
             }
             if (has_methods) {
                 try buf.writeAll("\n<ul class=\"toc-methods\">\n");
                 for (c.decls.items) |d| {
                     if (d.kind != .function) continue;
-                    const f = d.function orelse continue;
-                    if (!f.is_pub) continue;
-                    try buf.print("<li><a href=\"#sym-{s}-{s}\">.{s}</a></li>\n", .{ c.name, f.name, f.name });
+                    const mf = d.function orelse continue;
+                    if (!mf.is_pub) continue;
+                    try buf.print("<li><a href=\"#sym-{s}-{s}\">.{s}</a></li>\n", .{ c.name, mf.name, mf.name });
+                }
+                try buf.writeAll("</ul>\n");
+            }
+            try buf.writeAll("</li>\n");
+        }
+        // Generic type constructors
+        for (mod.symbols.items) |sym| {
+            if (sym.kind != .function) continue;
+            const f = sym.function orelse continue;
+            if (!f.is_pub or f.generic_return == null) continue;
+            const gr = f.generic_return.?;
+
+            try buf.print("<li><a href=\"#sym-{s}\">", .{f.name});
+            try htmlEscape(buf, f.name);
+            try buf.writeAll("</a>");
+
+            var has_methods = false;
+            for (gr.decls.items) |d| {
+                if (d.kind == .function) if (d.function) |mf| { if (mf.is_pub) { has_methods = true; break; } };
+            }
+            if (has_methods) {
+                try buf.writeAll("\n<ul class=\"toc-methods\">\n");
+                for (gr.decls.items) |d| {
+                    if (d.kind != .function) continue;
+                    const mf = d.function orelse continue;
+                    if (!mf.is_pub) continue;
+                    try buf.print("<li><a href=\"#sym-{s}-{s}\">.{s}</a></li>\n", .{ f.name, mf.name, mf.name });
                 }
                 try buf.writeAll("</ul>\n");
             }
@@ -212,6 +246,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
             if (sym.kind != .function) continue;
             const f = sym.function orelse continue;
             if (!f.is_pub) continue;
+            if (f.generic_return != null) continue;
             try buf.print("<li><a href=\"#sym-{s}\">", .{f.name});
             try htmlEscape(buf, f.name);
             try buf.writeAll("</a></li>\n");
@@ -295,6 +330,41 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
     }
     try buf.writeAll("</code></div>\n");
     if (f.doc) |doc| try writeDoc(buf, doc);
+
+    if (f.generic_return) |gr| {
+        if (gr.fields.len > 0) {
+            try buf.writeAll(
+                \\<table class="fields-table">
+                \\<tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                \\
+            );
+            for (gr.fields) |field| {
+                try buf.writeAll("<tr><td>");
+                try htmlEscape(buf, field.name);
+                try buf.writeAll("</td><td>");
+                if (field.type_src) |t| try htmlEscape(buf, t);
+                try buf.writeAll("</td><td class=\"field-doc\">");
+                if (field.doc) |d| try htmlEscape(buf, d);
+                try buf.writeAll("</td></tr>\n");
+            }
+            try buf.writeAll("</table>\n");
+        }
+
+        var has_pub_decls = false;
+        for (gr.decls.items) |d| {
+            if (d.kind == .function) if (d.function) |mf| { if (mf.is_pub) { has_pub_decls = true; break; } };
+        }
+        if (has_pub_decls) {
+            try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
+            for (gr.decls.items) |d| {
+                if (d.kind == .function) if (d.function) |mf| {
+                    if (mf.is_pub) try renderFn(buf, mf, f.name);
+                };
+            }
+            try buf.writeAll("</div>\n");
+        }
+    }
+
     try buf.writeAll("</div>\n");
 }
 
@@ -445,6 +515,7 @@ pub fn renderSite(
     project_name: []const u8,
     mods: []const symbols.Module,
     docs_dir: ?[]const u8,
+    emoji_provider: emoji.Provider,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
     defer out_dir.close();
@@ -458,7 +529,7 @@ pub fn renderSite(
 
     // ── index.html ──────────────────────────────────────────────────────────
     {
-        var buf = Buf.init(allocator);
+        var buf = Buf.init(allocator, emoji_provider);
         defer buf.deinit();
 
         try writeHeader(&buf, project_name, project_name, mods, guides, null, null, ".");
@@ -521,7 +592,7 @@ pub fn renderSite(
 
     // ── api/<module>.html ────────────────────────────────────────────────────
     for (mods) |mod| {
-        var buf = Buf.init(allocator);
+        var buf = Buf.init(allocator, emoji_provider);
         defer buf.deinit();
 
         const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
@@ -542,8 +613,11 @@ pub fn renderSite(
         var has_consts = false;
         for (mod.symbols.items) |sym| {
             switch (sym.kind) {
-                .container => if (sym.container) |c| { if (c.is_pub) has_types  = true; },
-                .function  => if (sym.function)  |f| { if (f.is_pub) has_fns    = true; },
+                .container => if (sym.container) |c| { if (c.is_pub) has_types = true; },
+                .function  => if (sym.function)  |f| {
+                    if (f.is_pub and f.generic_return != null) has_types = true;
+                    if (f.is_pub and f.generic_return == null) has_fns   = true;
+                },
                 .variable  => if (sym.variable)  |v| { if (v.is_pub) has_consts = true; },
                 else => {},
             }
@@ -556,12 +630,17 @@ pub fn renderSite(
                     if (c.is_pub) try renderContainer(&buf, c);
                 };
             }
+            for (mod.symbols.items) |sym| {
+                if (sym.kind != .function) continue;
+                const f = sym.function orelse continue;
+                if (f.is_pub and f.generic_return != null) try renderFn(&buf, f, null);
+            }
         }
         if (has_fns) {
             try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
             for (mod.symbols.items) |sym| {
                 if (sym.kind == .function) if (sym.function) |f| {
-                    if (f.is_pub) try renderFn(&buf, f, null);
+                    if (f.is_pub and f.generic_return == null) try renderFn(&buf, f, null);
                 };
             }
         }
@@ -585,7 +664,7 @@ pub fn renderSite(
 
     // ── guide/<stem>.html ────────────────────────────────────────────────────
     for (guides) |guide| {
-        var buf = Buf.init(allocator);
+        var buf = Buf.init(allocator, emoji_provider);
         defer buf.deinit();
 
         const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ guide.title, project_name });
@@ -595,7 +674,9 @@ pub fn renderSite(
         try writeGuideToc(&buf, guide.content);
         try writeNavClose(&buf);
 
-        const html = try markdown.toHtml(allocator, guide.content);
+        const raw = try markdown.toHtml(allocator, guide.content);
+        defer allocator.free(raw);
+        const html = try emoji.replaceInHtml(allocator, raw, emoji_provider);
         defer allocator.free(html);
 
         try buf.writeAll("<div class=\"guide-content\">\n");

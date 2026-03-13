@@ -84,3 +84,22 @@ pub const Wrapper = struct {
 pub fn multiply(a: i64, b: i64) i64 {
     return math.multiply(a, b);
 }
+
+/// A generic stack that holds items of type `T`.
+pub fn Stack(comptime T: type) type {
+    return struct {
+        /// The backing storage.
+        items: []T,
+        /// Current number of elements.
+        len: usize,
+
+        /// Push an item onto the stack.
+        pub fn push(self: *@This(), item: T) void { _ = self; _ = item; }
+
+        /// Pop and return the top item, or null if empty.
+        pub fn pop(self: *@This()) ?T { _ = self; return null; }
+
+        /// Peek at the top item without removing it.
+        pub fn peek(self: *const @This()) ?T { _ = self; return null; }
+    };
+}

@@ -23,6 +23,7 @@ pub const Function = struct {
     return_type_src: ?[]const u8,
     doc: ?[]const u8,
     is_pub: bool,
+    generic_return: ?Container = null,
 };
 
 pub const ContainerKind = enum { @"struct", @"enum", @"union", @"opaque" };
@@ -190,6 +191,41 @@ fn isContainerTag(tag: std.zig.Ast.Node.Tag) bool {
     };
 }
 
+/// If `fn_decl_node` is a `fn_decl` whose body is a single `return <container>`,
+/// returns the container node index. Otherwise returns null.
+fn findReturnedContainerNode(
+    tree: *const std.zig.Ast,
+    fn_decl_node: std.zig.Ast.Node.Index,
+) ?std.zig.Ast.Node.Index {
+    // fn_decl data is .node_and_node: [fn_proto, body_block]
+    const body = tree.nodeData(fn_decl_node).node_and_node[1];
+
+    var stmts_buf: [2]std.zig.Ast.Node.Index = undefined;
+    const stmts = tree.blockStatements(&stmts_buf, body) orelse return null;
+
+    for (stmts) |stmt| {
+        if (tree.nodeTag(stmt) != .@"return") continue;
+        const ret_expr = tree.nodeData(stmt).opt_node.unwrap() orelse continue;
+
+        // Direct: `return struct { ... }`
+        if (isContainerTag(tree.nodeTag(ret_expr))) return ret_expr;
+
+        // Indirect: `const X = struct { ... }; return X;`
+        if (tree.nodeTag(ret_expr) == .identifier) {
+            const ret_name = tree.tokenSlice(tree.nodeMainToken(ret_expr));
+            for (stmts) |other| {
+                const vd = tree.fullVarDecl(other) orelse continue;
+                const decl_name = tree.tokenSlice(vd.ast.mut_token + 1);
+                if (!std.mem.eql(u8, decl_name, ret_name)) continue;
+                if (vd.ast.init_node.unwrap()) |init| {
+                    if (isContainerTag(tree.nodeTag(init))) return init;
+                }
+            }
+        }
+    }
+    return null;
+}
+
 fn getContainerKind(tree: std.zig.Ast, cd: std.zig.Ast.full.ContainerDecl) ContainerKind {
     return switch (tree.tokenTag(cd.ast.main_token)) {
         .keyword_struct => .@"struct",
@@ -227,6 +263,19 @@ fn getImportPath(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) ?[]const u8 {
     return inner;
 }
 
+fn deinitContainer(allocator: std.mem.Allocator, c: *Container) void {
+    allocator.free(c.name);
+    if (c.doc) |s| allocator.free(s);
+    for (c.fields) |f| {
+        allocator.free(f.name);
+        if (f.type_src) |s| allocator.free(s);
+        if (f.doc) |s| allocator.free(s);
+    }
+    allocator.free(c.fields);
+    for (c.decls.items) |*d| deinitSymbol(allocator, d);
+    c.decls.deinit(allocator);
+}
+
 fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
     switch (sym.kind) {
         .function => if (sym.function) |*f| {
@@ -238,24 +287,14 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
             allocator.free(f.params);
             if (f.return_type_src) |s| allocator.free(s);
             if (f.doc) |s| allocator.free(s);
+            if (f.generic_return) |*c| deinitContainer(allocator, c);
         },
         .variable => if (sym.variable) |*v| {
             allocator.free(v.name);
             if (v.type_src) |s| allocator.free(s);
             if (v.doc) |s| allocator.free(s);
         },
-        .container => if (sym.container) |*c| {
-            allocator.free(c.name);
-            if (c.doc) |s| allocator.free(s);
-            for (c.fields) |f| {
-                allocator.free(f.name);
-                if (f.type_src) |s| allocator.free(s);
-                if (f.doc) |s| allocator.free(s);
-            }
-            allocator.free(c.fields);
-            for (c.decls.items) |*d| deinitSymbol(allocator, d);
-            c.decls.deinit(allocator);
-        },
+        .container => if (sym.container) |*c| deinitContainer(allocator, c),
         else => {},
     }
 }
@@ -270,7 +309,7 @@ fn extractFnSymbol(
     allocator: std.mem.Allocator,
     tree: *const std.zig.Ast,
     node: std.zig.Ast.Node.Index,
-) !Symbol {
+) std.mem.Allocator.Error!Symbol {
     const first_tok = tree.firstToken(node);
     const doc = try collectDocComment(allocator, tree.*, first_tok);
     errdefer if (doc) |d| allocator.free(d);
@@ -315,6 +354,25 @@ fn extractFnSymbol(
         try allocator.dupe(u8, nodeToSource(tree.*, proto.ast.return_type.unwrap().?))
     else
         null;
+    errdefer if (return_type_src) |s| allocator.free(s);
+
+    var generic_return: ?Container = null;
+    errdefer if (generic_return) |*c| deinitContainer(allocator, c);
+
+    if (tree.nodeTag(node) == .fn_decl) {
+        if (return_type_src) |rts| {
+            if (std.mem.eql(u8, rts, "type")) {
+                if (findReturnedContainerNode(tree, node)) |cn| {
+                    const gr_name = try allocator.dupe(u8, name);
+                    const sym = try extractContainerSymbol(
+                        allocator, tree, cn, gr_name,
+                        tree.firstToken(cn), is_pub,
+                    );
+                    generic_return = sym.container;
+                }
+            }
+        }
+    }
 
     return .{
         .kind = .function,
@@ -324,6 +382,7 @@ fn extractFnSymbol(
             .return_type_src = return_type_src,
             .doc = doc,
             .is_pub = is_pub,
+            .generic_return = generic_return,
         },
     };
 }
@@ -340,7 +399,7 @@ fn extractContainerSymbol(
     name: []u8,
     first_decl_tok: std.zig.Ast.TokenIndex,
     is_pub: bool,
-) !Symbol {
+) std.mem.Allocator.Error!Symbol {
     errdefer allocator.free(name);
 
     const doc = try collectDocComment(allocator, tree.*, first_decl_tok);
