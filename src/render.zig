@@ -80,9 +80,12 @@ fn writeDoc(buf: *Buf, doc: []const u8) !void {
 }
 
 // ---------------------------------------------------------------------------
-// Page header / footer
+// Page header / nav / footer
 // ---------------------------------------------------------------------------
 
+/// Write the page <head>, <body>, and the left nav sidebar.
+/// NOTE: does NOT close </nav> or open <main> — call writeNavClose after
+/// appending any per-page TOC content into the nav.
 fn writeHeader(
     buf: *Buf,
     title: []const u8,
@@ -116,7 +119,7 @@ fn writeHeader(
     try buf.writeAll("</a>\n");
 
     if (mods.len > 0) {
-        try buf.writeAll("<h4>Modules</h4>\n<ul>\n");
+        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
         for (mods) |mod| {
             const active = if (active_module) |am| std.mem.eql(u8, am, mod.name) else false;
             const cls: []const u8 = if (active) " class=\"active\"" else "";
@@ -124,11 +127,11 @@ fn writeHeader(
             try htmlEscape(buf, mod.name);
             try buf.writeAll("</a></li>\n");
         }
-        try buf.writeAll("</ul>\n");
+        try buf.writeAll("</ul>\n</details>\n");
     }
 
     if (guides.len > 0) {
-        try buf.writeAll("<h4>Guides</h4>\n<ul>\n");
+        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Guides</summary>\n<ul>\n");
         for (guides) |guide| {
             const active = if (active_guide) |ag| std.mem.eql(u8, ag, guide.stem) else false;
             const cls: []const u8 = if (active) " class=\"active\"" else "";
@@ -136,9 +139,13 @@ fn writeHeader(
             try htmlEscape(buf, guide.title);
             try buf.writeAll("</a></li>\n");
         }
-        try buf.writeAll("</ul>\n");
+        try buf.writeAll("</ul>\n</details>\n");
     }
+    // Caller writes per-page TOC here, then calls writeNavClose.
+}
 
+/// Close the nav sidebar and open <main>.
+fn writeNavClose(buf: *Buf) !void {
     try buf.writeAll("</nav>\n<main>\n");
 }
 
@@ -147,11 +154,129 @@ fn writeFooter(buf: *Buf) !void {
 }
 
 // ---------------------------------------------------------------------------
+// Per-page TOC writers
+// ---------------------------------------------------------------------------
+
+/// Emit a collapsible "On this page" TOC for an API module page.
+/// Shows Types → container names (with indented methods), Functions, Constants.
+fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
+    var has_types  = false;
+    var has_fns    = false;
+    var has_consts = false;
+    for (mod.symbols.items) |sym| {
+        switch (sym.kind) {
+            .container => if (sym.container) |c| { if (c.is_pub) has_types  = true; },
+            .function  => if (sym.function)  |f| { if (f.is_pub) has_fns    = true; },
+            .variable  => if (sym.variable)  |v| { if (v.is_pub) has_consts = true; },
+            else => {},
+        }
+    }
+    if (!has_types and !has_fns and !has_consts) return;
+
+    try buf.writeAll("<details class=\"nav-section page-toc\" open>\n<summary>On this page</summary>\n<ul>\n");
+
+    if (has_types) {
+        try buf.writeAll("<li><a href=\"#section-types\">Types</a>\n<ul class=\"toc-children\">\n");
+        for (mod.symbols.items) |sym| {
+            if (sym.kind != .container) continue;
+            const c = sym.container orelse continue;
+            if (!c.is_pub) continue;
+
+            try buf.print("<li><a href=\"#sym-{s}\">", .{c.name});
+            try htmlEscape(buf, c.name);
+            try buf.writeAll("</a>");
+
+            // Indented public methods
+            var has_methods = false;
+            for (c.decls.items) |d| {
+                if (d.kind == .function) if (d.function) |f| { if (f.is_pub) { has_methods = true; break; } };
+            }
+            if (has_methods) {
+                try buf.writeAll("\n<ul class=\"toc-methods\">\n");
+                for (c.decls.items) |d| {
+                    if (d.kind != .function) continue;
+                    const f = d.function orelse continue;
+                    if (!f.is_pub) continue;
+                    try buf.print("<li><a href=\"#sym-{s}-{s}\">.{s}</a></li>\n", .{ c.name, f.name, f.name });
+                }
+                try buf.writeAll("</ul>\n");
+            }
+            try buf.writeAll("</li>\n");
+        }
+        try buf.writeAll("</ul>\n</li>\n");
+    }
+
+    if (has_fns) {
+        try buf.writeAll("<li><a href=\"#section-functions\">Functions</a>\n<ul class=\"toc-children\">\n");
+        for (mod.symbols.items) |sym| {
+            if (sym.kind != .function) continue;
+            const f = sym.function orelse continue;
+            if (!f.is_pub) continue;
+            try buf.print("<li><a href=\"#sym-{s}\">", .{f.name});
+            try htmlEscape(buf, f.name);
+            try buf.writeAll("</a></li>\n");
+        }
+        try buf.writeAll("</ul>\n</li>\n");
+    }
+
+    if (has_consts) {
+        try buf.writeAll("<li><a href=\"#section-constants\">Constants</a>\n<ul class=\"toc-children\">\n");
+        for (mod.symbols.items) |sym| {
+            if (sym.kind != .variable) continue;
+            const v = sym.variable orelse continue;
+            if (!v.is_pub) continue;
+            try buf.print("<li><a href=\"#sym-{s}\">", .{v.name});
+            try htmlEscape(buf, v.name);
+            try buf.writeAll("</a></li>\n");
+        }
+        try buf.writeAll("</ul>\n</li>\n");
+    }
+
+    try buf.writeAll("</ul>\n</details>\n");
+}
+
+/// Emit a collapsible "On this page" TOC for a guide (markdown) page.
+/// Scans raw markdown source for `## ` headings (level 2 only).
+fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
+    // First pass: count H2 headings.
+    var has_h2 = false;
+    {
+        var lines = std.mem.splitScalar(u8, raw_content, '\n');
+        while (lines.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (std.mem.startsWith(u8, t, "## ")) { has_h2 = true; break; }
+        }
+    }
+    if (!has_h2) return;
+
+    try buf.writeAll("<details class=\"nav-section page-toc\" open>\n<summary>On this page</summary>\n<ul class=\"toc-children\">\n");
+
+    var lines = std.mem.splitScalar(u8, raw_content, '\n');
+    while (lines.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, t, "## ")) continue;
+        const heading = std.mem.trim(u8, t[3..], " \t");
+        const slug = try markdown.slugify(buf.alloc, heading);
+        defer buf.alloc.free(slug);
+        try buf.print("<li><a href=\"#h2-{s}\">", .{slug});
+        try htmlEscape(buf, heading);
+        try buf.writeAll("</a></li>\n");
+    }
+
+    try buf.writeAll("</ul>\n</details>\n");
+}
+
+// ---------------------------------------------------------------------------
 // Symbol renderers
 // ---------------------------------------------------------------------------
 
-fn renderFn(buf: *Buf, f: symbols.Function) !void {
-    try buf.writeAll("<div class=\"symbol\">\n<div class=\"symbol-sig\"><code>");
+fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void {
+    if (parent_container) |pc| {
+        try buf.print("<div class=\"symbol\" id=\"sym-{s}-{s}\">\n", .{ pc, f.name });
+    } else {
+        try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{f.name});
+    }
+    try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (f.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     try buf.writeAll("<span class=\"kw\">fn </span>");
     try buf.print("<span class=\"fn-name\">{s}</span>(", .{f.name});
@@ -174,7 +299,8 @@ fn renderFn(buf: *Buf, f: symbols.Function) !void {
 }
 
 fn renderContainer(buf: *Buf, c: symbols.Container) !void {
-    try buf.writeAll("<div class=\"symbol\">\n<div class=\"symbol-sig\"><code>");
+    try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{c.name});
+    try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (c.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     try buf.print(
         "<span class=\"kw\">{s}</span> <span class=\"fn-name\">{s}</span>",
@@ -209,7 +335,7 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
         try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
         for (c.decls.items) |d| {
             if (d.kind == .function) if (d.function) |f| {
-                if (f.is_pub) try renderFn(buf, f);
+                if (f.is_pub) try renderFn(buf, f, c.name);
             };
         }
         try buf.writeAll("</div>\n");
@@ -219,7 +345,8 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
 }
 
 fn renderVar(buf: *Buf, v: symbols.Variable) !void {
-    try buf.writeAll("<div class=\"symbol\">\n<div class=\"symbol-sig\"><code>");
+    try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{v.name});
+    try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (v.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     try buf.writeAll("<span class=\"kw\">const </span>");
     try buf.print("<span class=\"fn-name\">{s}</span>", .{v.name});
@@ -291,7 +418,6 @@ fn loadGuides(allocator: std.mem.Allocator, docs_dir_path: []const u8) ![]GuideE
         });
     }
 
-    // Sort guides by stem name for a stable nav order.
     const items = list.items;
     std.mem.sort(GuideEntry, items, {}, struct {
         fn lt(_: void, a: GuideEntry, b: GuideEntry) bool {
@@ -325,7 +451,6 @@ pub fn renderSite(
 
     try out_dir.makePath("api");
 
-    // Load guide pages if a docs directory was specified.
     const guides: []GuideEntry = if (docs_dir) |dd| try loadGuides(allocator, dd) else &.{};
     defer if (docs_dir != null) freeGuides(allocator, guides);
 
@@ -337,6 +462,9 @@ pub fn renderSite(
         defer buf.deinit();
 
         try writeHeader(&buf, project_name, project_name, mods, guides, null, null, ".");
+        // No per-page TOC on the index.
+        try writeNavClose(&buf);
+
         try buf.writeAll("<h1>");
         try htmlEscape(&buf, project_name);
         try buf.writeAll("</h1>\n");
@@ -400,6 +528,8 @@ pub fn renderSite(
         defer allocator.free(title);
 
         try writeHeader(&buf, title, project_name, mods, guides, mod.name, null, "..");
+        try writeApiToc(&buf, mod);
+        try writeNavClose(&buf);
 
         try buf.writeAll("<h1>");
         try htmlEscape(&buf, mod.name);
@@ -420,7 +550,7 @@ pub fn renderSite(
         }
 
         if (has_types) {
-            try buf.writeAll("<h2>Types</h2>\n");
+            try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
             for (mod.symbols.items) |sym| {
                 if (sym.kind == .container) if (sym.container) |c| {
                     if (c.is_pub) try renderContainer(&buf, c);
@@ -428,15 +558,15 @@ pub fn renderSite(
             }
         }
         if (has_fns) {
-            try buf.writeAll("<h2>Functions</h2>\n");
+            try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
             for (mod.symbols.items) |sym| {
                 if (sym.kind == .function) if (sym.function) |f| {
-                    if (f.is_pub) try renderFn(&buf, f);
+                    if (f.is_pub) try renderFn(&buf, f, null);
                 };
             }
         }
         if (has_consts) {
-            try buf.writeAll("<h2>Constants</h2>\n");
+            try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
             for (mod.symbols.items) |sym| {
                 if (sym.kind == .variable) if (sym.variable) |v| {
                     if (v.is_pub) try renderVar(&buf, v);
@@ -462,6 +592,8 @@ pub fn renderSite(
         defer allocator.free(title);
 
         try writeHeader(&buf, title, project_name, mods, guides, null, guide.stem, "..");
+        try writeGuideToc(&buf, guide.content);
+        try writeNavClose(&buf);
 
         const html = try markdown.toHtml(allocator, guide.content);
         defer allocator.free(html);

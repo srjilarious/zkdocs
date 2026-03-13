@@ -215,6 +215,86 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
 .guide-content ul,.guide-content ol { padding-left: 1.75rem; margin: 0 0 1rem; }
 .guide-content li { margin-bottom: .3rem; }
 
+/* ── Collapsible nav sections (details/summary) ── */
+details.nav-section { margin: .9rem 0 0; }
+details.nav-section > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted);
+  padding: .15rem 0;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+}
+details.nav-section > summary::-webkit-details-marker { display: none; }
+details.nav-section > summary::marker { content: ''; }
+details.nav-section > summary::before {
+  content: "▶";
+  font-size: .5rem;
+  display: inline-block;
+  transition: transform .18s ease;
+  flex-shrink: 0;
+}
+details.nav-section[open] > summary::before { transform: rotate(90deg); }
+details.nav-section > ul { margin-top: .25rem; }
+
+/* ── Per-page on-this-page TOC ── */
+details.page-toc {
+  margin-top: 1.5rem;
+  padding-top: .75rem;
+  border-top: 1px solid var(--border);
+}
+details.page-toc > ul {
+  list-style: none;
+  padding: 0;
+  margin: .3rem 0 0;
+}
+details.page-toc > ul > li > a {
+  display: block;
+  padding: .2rem .4rem;
+  font-size: .82rem;
+  color: var(--text);
+  text-decoration: none;
+  border-radius: 3px;
+}
+details.page-toc > ul > li > a:hover { color: var(--accent); }
+
+.toc-children {
+  list-style: none;
+  padding-left: .65rem;
+  margin: .15rem 0;
+}
+.toc-children li a {
+  display: block;
+  padding: .15rem .4rem;
+  font-size: .8rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: 3px;
+}
+.toc-children li a:hover { color: var(--text); background: var(--bg-card); }
+
+.toc-methods {
+  list-style: none;
+  padding-left: .65rem;
+  margin: .1rem 0;
+}
+.toc-methods li a {
+  display: block;
+  padding: .1rem .4rem;
+  font-size: .76rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  text-decoration: none;
+  opacity: .75;
+}
+.toc-methods li a:hover { opacity: 1; color: var(--text); }
+
 /* ── Responsive ── */
 @media (max-width: 700px) {
   nav.sidebar { display: none; }
