@@ -10,18 +10,50 @@ const CSS = @embedFile("assets/style.css");
 // ---------------------------------------------------------------------------
 
 pub const GuideEntry = struct {
-    stem: []const u8,     // filename without .md, used in URL
-    title: []const u8,    // extracted from first H1 or falls back to stem
-    content: []const u8,  // raw markdown source
+    slug: []const u8,     // URL path, e.g. "getting-started" or "reference/cli"
+    title: []const u8,
+    content: []const u8,
 };
 
-pub fn freeGuides(allocator: std.mem.Allocator, guides: []const GuideEntry) void {
-    for (guides) |g| {
-        allocator.free(g.stem);
-        allocator.free(g.title);
-        allocator.free(g.content);
+pub const GuideSection = struct {
+    title: []const u8,
+    entries: []GuideEntry,
+};
+
+/// A top-level navigation item: either a standalone guide or a titled section.
+pub const GuideNavItem = union(enum) {
+    entry: GuideEntry,
+    section: GuideSection,
+};
+
+fn freeGuideEntry(allocator: std.mem.Allocator, e: *GuideEntry) void {
+    allocator.free(e.slug);
+    allocator.free(e.title);
+    allocator.free(e.content);
+}
+
+fn freeNavItem(allocator: std.mem.Allocator, item: *GuideNavItem) void {
+    switch (item.*) {
+        .entry => |*e| freeGuideEntry(allocator, e),
+        .section => |*s| {
+            allocator.free(s.title);
+            for (s.entries) |*e| freeGuideEntry(allocator, e);
+            allocator.free(s.entries);
+        },
     }
+}
+
+pub fn freeGuides(allocator: std.mem.Allocator, guides: []GuideNavItem) void {
+    for (guides) |*item| freeNavItem(allocator, item);
     allocator.free(guides);
+}
+
+fn guidesHaveEntries(guides: []const GuideNavItem) bool {
+    for (guides) |item| switch (item) {
+        .entry => return true,
+        .section => |s| if (s.entries.len > 0) return true,
+    };
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +127,7 @@ fn writeHeader(
     title: []const u8,
     project_name: []const u8,
     mods: []const symbols.Module,
-    guides: []const GuideEntry,
+    guides: []const GuideNavItem,
     active_module: ?[]const u8,
     active_guide: ?[]const u8,
     prefix: []const u8,
@@ -134,14 +166,41 @@ fn writeHeader(
         try buf.writeAll("</ul>\n</details>\n");
     }
 
-    if (guides.len > 0) {
+    if (guidesHaveEntries(guides)) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Guides</summary>\n<ul>\n");
-        for (guides) |guide| {
-            const active = if (active_guide) |ag| std.mem.eql(u8, ag, guide.stem) else false;
-            const cls: []const u8 = if (active) " class=\"active\"" else "";
-            try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, guide.stem, cls });
-            try htmlEscape(buf, guide.title);
-            try buf.writeAll("</a></li>\n");
+        for (guides) |item| {
+            switch (item) {
+                .entry => |e| {
+                    const active = if (active_guide) |ag| std.mem.eql(u8, ag, e.slug) else false;
+                    const cls: []const u8 = if (active) " class=\"active\"" else "";
+                    try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                    try htmlEscape(buf, e.title);
+                    try buf.writeAll("</a></li>\n");
+                },
+                .section => |s| {
+                    var section_open = false;
+                    if (active_guide) |ag| {
+                        for (s.entries) |e| {
+                            if (std.mem.eql(u8, ag, e.slug)) { section_open = true; break; }
+                        }
+                    }
+                    if (section_open) {
+                        try buf.writeAll("<details class=\"nav-subsection\" open>\n<summary>");
+                    } else {
+                        try buf.writeAll("<details class=\"nav-subsection\">\n<summary>");
+                    }
+                    try htmlEscape(buf, s.title);
+                    try buf.writeAll("</summary>\n<ul>\n");
+                    for (s.entries) |e| {
+                        const active = if (active_guide) |ag| std.mem.eql(u8, ag, e.slug) else false;
+                        const cls: []const u8 = if (active) " class=\"active\"" else "";
+                        try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                        try htmlEscape(buf, e.title);
+                        try buf.writeAll("</a></li>\n");
+                    }
+                    try buf.writeAll("</ul>\n</details>\n");
+                },
+            }
         }
         try buf.writeAll("</ul>\n</details>\n");
     }
@@ -445,57 +504,160 @@ fn extractTitle(content: []const u8, fallback: []const u8) []const u8 {
     return fallback;
 }
 
-fn loadGuides(allocator: std.mem.Allocator, docs_dir_path: []const u8) ![]GuideEntry {
+fn loadGuideEntry(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    config_dir: []const u8,
+) !GuideEntry {
+    const src_val = obj.get("src") orelse return error.MissingField;
+    if (src_val != .string) return error.InvalidField;
+    const src = src_val.string;
+
+    const full_path = try std.fs.path.join(allocator, &.{ config_dir, src });
+    defer allocator.free(full_path);
+
+    const content = try std.fs.cwd().readFileAlloc(allocator, full_path, 4 * 1024 * 1024);
+    errdefer allocator.free(content);
+
+    // Slug = src with .md stripped
+    const slug_src = if (std.mem.endsWith(u8, src, ".md")) src[0 .. src.len - 3] else src;
+    const slug = try allocator.dupe(u8, slug_src);
+    errdefer allocator.free(slug);
+
+    // Title: explicit config value, or extracted H1, or file stem
+    const stem = std.fs.path.stem(src);
+    const title = if (obj.get("title")) |tv|
+        try allocator.dupe(u8, if (tv == .string) tv.string else extractTitle(content, stem))
+    else
+        try allocator.dupe(u8, extractTitle(content, stem));
+    errdefer allocator.free(title);
+
+    return .{ .slug = slug, .title = title, .content = content };
+}
+
+fn loadGuidesFromConfig(
+    allocator: std.mem.Allocator,
+    config_path: []const u8,
+) ![]GuideNavItem {
+    const raw = std.fs.cwd().readFileAlloc(allocator, config_path, 1 * 1024 * 1024) catch |err| {
+        std.log.warn("Cannot open guides config '{s}': {}", .{ config_path, err });
+        return &.{};
+    };
+    defer allocator.free(raw);
+
+    const config_dir = std.fs.path.dirname(config_path) orelse ".";
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .array) {
+        std.log.warn("Guides config '{s}' must be a JSON array", .{config_path});
+        return &.{};
+    }
+
+    var items = std.ArrayList(GuideNavItem){};
+    errdefer {
+        for (items.items) |*it| freeNavItem(allocator, it);
+        items.deinit(allocator);
+    }
+
+    for (parsed.value.array.items) |json_item| {
+        if (json_item != .object) continue;
+        const obj = json_item.object;
+
+        if (obj.get("section")) |sec_val| {
+            if (sec_val != .string) continue;
+            const sec_title = try allocator.dupe(u8, sec_val.string);
+            errdefer allocator.free(sec_title);
+
+            var sec_entries = std.ArrayList(GuideEntry){};
+            errdefer {
+                for (sec_entries.items) |*e| freeGuideEntry(allocator, e);
+                sec_entries.deinit(allocator);
+            }
+
+            if (obj.get("entries")) |ev| if (ev == .array) {
+                for (ev.array.items) |ei| {
+                    if (ei != .object) continue;
+                    const e = try loadGuideEntry(allocator, ei.object, config_dir);
+                    errdefer freeGuideEntry(allocator, @constCast(&e));
+                    try sec_entries.append(allocator, e);
+                }
+            };
+
+            const sec_slice = try sec_entries.toOwnedSlice(allocator);
+            errdefer {
+                for (sec_slice) |*e| freeGuideEntry(allocator, e);
+                allocator.free(sec_slice);
+            }
+            try items.append(allocator, .{ .section = .{
+                .title = sec_title,
+                .entries = sec_slice,
+            } });
+        } else if (obj.get("src") != null) {
+            const e = try loadGuideEntry(allocator, obj, config_dir);
+            errdefer freeGuideEntry(allocator, @constCast(&e));
+            try items.append(allocator, .{ .entry = e });
+        }
+    }
+
+    return items.toOwnedSlice(allocator);
+}
+
+fn loadGuidesFromDir(
+    allocator: std.mem.Allocator,
+    docs_dir_path: []const u8,
+) ![]GuideNavItem {
     var dir = std.fs.cwd().openDir(docs_dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn("Cannot open docs dir '{s}': {}", .{ docs_dir_path, err });
         return &.{};
     };
     defer dir.close();
 
-    var list = std.ArrayList(GuideEntry){};
+    var list = std.ArrayList(GuideNavItem){};
     errdefer {
-        for (list.items) |g| {
-            allocator.free(g.stem);
-            allocator.free(g.title);
-            allocator.free(g.content);
-        }
+        for (list.items) |*it| freeNavItem(allocator, it);
         list.deinit(allocator);
     }
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".md")) continue;
+    while (try iter.next()) |de| {
+        if (de.kind != .file) continue;
+        if (!std.mem.endsWith(u8, de.name, ".md")) continue;
 
-        const raw_content = dir.readFileAlloc(allocator, entry.name, 4 * 1024 * 1024) catch |err| {
-            std.log.warn("Cannot read '{s}': {}", .{ entry.name, err });
+        const content = dir.readFileAlloc(allocator, de.name, 4 * 1024 * 1024) catch |err| {
+            std.log.warn("Cannot read '{s}': {}", .{ de.name, err });
             continue;
         };
-        errdefer allocator.free(raw_content);
+        errdefer allocator.free(content);
 
-        const stem_slice = entry.name[0 .. entry.name.len - 3];
-        const stem = try allocator.dupe(u8, stem_slice);
-        errdefer allocator.free(stem);
-
-        const title_slice = extractTitle(raw_content, stem_slice);
-        const title = try allocator.dupe(u8, title_slice);
+        const stem_slice = de.name[0 .. de.name.len - 3];
+        const slug = try allocator.dupe(u8, stem_slice);
+        errdefer allocator.free(slug);
+        const title = try allocator.dupe(u8, extractTitle(content, stem_slice));
         errdefer allocator.free(title);
 
-        try list.append(allocator, .{
-            .stem = stem,
-            .title = title,
-            .content = raw_content,
-        });
+        try list.append(allocator, .{ .entry = .{
+            .slug = slug, .title = title, .content = content,
+        } });
     }
 
-    const items = list.items;
-    std.mem.sort(GuideEntry, items, {}, struct {
-        fn lt(_: void, a: GuideEntry, b: GuideEntry) bool {
-            return std.mem.lessThan(u8, a.stem, b.stem);
+    std.mem.sort(GuideNavItem, list.items, {}, struct {
+        fn lt(_: void, a: GuideNavItem, b: GuideNavItem) bool {
+            const as = switch (a) { .entry => |e| e.slug, .section => |s| s.title };
+            const bs = switch (b) { .entry => |e| e.slug, .section => |s| s.title };
+            return std.mem.lessThan(u8, as, bs);
         }
     }.lt);
 
     return list.toOwnedSlice(allocator);
+}
+
+fn loadGuides(allocator: std.mem.Allocator, docs_path: []const u8) ![]GuideNavItem {
+    return if (std.mem.endsWith(u8, docs_path, ".json"))
+        loadGuidesFromConfig(allocator, docs_path)
+    else
+        loadGuidesFromDir(allocator, docs_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -522,10 +684,10 @@ pub fn renderSite(
 
     try out_dir.makePath("api");
 
-    const guides: []GuideEntry = if (docs_dir) |dd| try loadGuides(allocator, dd) else &.{};
+    const guides: []GuideNavItem = if (docs_dir) |dd| try loadGuides(allocator, dd) else &.{};
     defer if (docs_dir != null) freeGuides(allocator, guides);
 
-    if (guides.len > 0) try out_dir.makePath("guide");
+    if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
 
     // ── index.html ──────────────────────────────────────────────────────────
     {
@@ -573,13 +735,26 @@ pub fn renderSite(
             try buf.writeAll("</ul>\n");
         }
 
-        if (guides.len > 0) {
+        if (guidesHaveEntries(guides)) {
             try buf.writeAll("<h2>Guides</h2>\n<ul class=\"module-list\">\n");
-            for (guides) |guide| {
-                try buf.print("<li><a href=\"./guide/{s}.html\">", .{guide.stem});
-                try htmlEscape(&buf, guide.title);
-                try buf.writeAll("</a></li>\n");
-            }
+            for (guides) |item| switch (item) {
+                .entry => |e| {
+                    try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                    try htmlEscape(&buf, e.title);
+                    try buf.writeAll("</a></li>\n");
+                },
+                .section => |s| {
+                    try buf.writeAll("<li><strong>");
+                    try htmlEscape(&buf, s.title);
+                    try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
+                    for (s.entries) |e| {
+                        try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                        try htmlEscape(&buf, e.title);
+                        try buf.writeAll("</a></li>\n");
+                    }
+                    try buf.writeAll("</ul></li>\n");
+                },
+            };
             try buf.writeAll("</ul>\n");
         }
 
@@ -662,33 +837,62 @@ pub fn renderSite(
         try buf.flush(file);
     }
 
-    // ── guide/<stem>.html ────────────────────────────────────────────────────
-    for (guides) |guide| {
-        var buf = Buf.init(allocator, emoji_provider);
-        defer buf.deinit();
+    // ── guide pages ──────────────────────────────────────────────────────────
+    for (guides) |item| switch (item) {
+        .entry => |e| try renderGuidePage(
+            allocator, &out_dir, e, project_name, mods, guides, emoji_provider,
+        ),
+        .section => |s| for (s.entries) |e| try renderGuidePage(
+            allocator, &out_dir, e, project_name, mods, guides, emoji_provider,
+        ),
+    };
+}
 
-        const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ guide.title, project_name });
-        defer allocator.free(title);
+fn renderGuidePage(
+    allocator: std.mem.Allocator,
+    out_dir: *std.fs.Dir,
+    entry: GuideEntry,
+    project_name: []const u8,
+    mods: []const symbols.Module,
+    guides: []const GuideNavItem,
+    emoji_provider: emoji.Provider,
+) !void {
+    var buf = Buf.init(allocator, emoji_provider);
+    defer buf.deinit();
 
-        try writeHeader(&buf, title, project_name, mods, guides, null, guide.stem, "..");
-        try writeGuideToc(&buf, guide.content);
-        try writeNavClose(&buf);
+    const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
+    defer allocator.free(title);
 
-        const raw = try markdown.toHtml(allocator, guide.content);
-        defer allocator.free(raw);
-        const html = try emoji.replaceInHtml(allocator, raw, emoji_provider);
-        defer allocator.free(html);
+    // Pages in subdirs (slug contains '/') need an extra ".." to reach root
+    const prefix: []const u8 = if (std.mem.indexOfScalar(u8, entry.slug, '/') != null)
+        "../.."
+    else
+        "..";
 
-        try buf.writeAll("<div class=\"guide-content\">\n");
-        try buf.writeAll(html);
-        try buf.writeAll("</div>\n");
+    try writeHeader(&buf, title, project_name, mods, guides, null, entry.slug, prefix);
+    try writeGuideToc(&buf, entry.content);
+    try writeNavClose(&buf);
 
-        try writeFooter(&buf);
+    const raw = try markdown.toHtml(allocator, entry.content);
+    defer allocator.free(raw);
+    const html = try emoji.replaceInHtml(allocator, raw, emoji_provider);
+    defer allocator.free(html);
 
-        const filename = try std.fmt.allocPrint(allocator, "guide/{s}.html", .{guide.stem});
-        defer allocator.free(filename);
-        const file = try out_dir.createFile(filename, .{});
-        defer file.close();
-        try buf.flush(file);
+    try buf.writeAll("<div class=\"guide-content\">\n");
+    try buf.writeAll(html);
+    try buf.writeAll("</div>\n");
+
+    try writeFooter(&buf);
+
+    const filename = try std.fmt.allocPrint(allocator, "guide/{s}.html", .{entry.slug});
+    defer allocator.free(filename);
+
+    // Ensure parent directory exists for nested slugs
+    if (std.fs.path.dirname(filename)) |dir_path| {
+        try out_dir.makePath(dir_path);
     }
+
+    const file = try out_dir.createFile(filename, .{});
+    defer file.close();
+    try buf.flush(file);
 }

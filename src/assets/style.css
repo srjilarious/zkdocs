@@ -242,6 +242,35 @@ details.nav-section > summary::before {
 details.nav-section[open] > summary::before { transform: rotate(90deg); }
 details.nav-section > ul { margin-top: .25rem; }
 
+/* ── Guide subsections in nav ── */
+details.nav-subsection {
+  margin: .15rem 0;
+  padding-left: .5rem;
+  border-left: 1px solid var(--border);
+}
+details.nav-subsection > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: .8rem;
+  color: var(--muted);
+  padding: .15rem 0;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+}
+details.nav-subsection > summary::-webkit-details-marker { display: none; }
+details.nav-subsection > summary::marker { content: ''; }
+details.nav-subsection > summary::before {
+  content: "▶";
+  font-size: .45rem;
+  display: inline-block;
+  transition: transform .15s ease;
+  flex-shrink: 0;
+}
+details.nav-subsection[open] > summary::before { transform: rotate(90deg); }
+details.nav-subsection > ul { margin: .1rem 0 .2rem .4rem; }
+
 /* ── Per-page on-this-page TOC ── */
 details.page-toc {
   margin-top: 1.5rem;
@@ -294,6 +323,14 @@ details.page-toc > ul > li > a:hover { color: var(--accent); }
   opacity: .75;
 }
 .toc-methods li a:hover { opacity: 1; color: var(--text); }
+
+/* ── Emoji ── */
+img.emoji {
+  height: 1.2em;
+  width: 1.2em;
+  vertical-align: middle;
+  display: inline-block;
+}
 
 /* ── Responsive ── */
 @media (max-width: 700px) {

@@ -1,0 +1,12 @@
+[
+  { "title": "Getting Started", "src": "getting-started.md" },
+  {
+    "section": "Reference",
+    "entries": [
+      { "title": "CLI Options",          "src": "reference/cli.md" },
+      { "title": "Writing Doc Comments", "src": "reference/doc-comments.md" },
+      { "title": "Guides Configuration", "src": "reference/guides-config.md" },
+      { "title": "Build Integration",    "src": "reference/build-integration.md" }
+    ]
+  }
+]

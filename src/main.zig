@@ -2,6 +2,7 @@ const std = @import("std");
 const symbols = @import("symbols");
 const render = @import("render");
 const zargs = @import("zargunaught");
+const emoji = @import("emoji");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -15,8 +16,9 @@ pub fn main() !void {
             .{ .longName = "root", .shortName = "r", .description = "Root source file to extract symbols from.", .maxNumParams = 1 },
             .{ .longName = "name", .shortName = "n", .description = "Display name for the root module.", .maxNumParams = 1 },
             .{ .longName = "out", .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
-            .{ .longName = "docs", .shortName = "d", .description = "Directory with .md guide pages.", .maxNumParams = 1 },
-            .{ .longName = "help", .shortName = "h", .description = "Print help information." },
+            .{ .longName = "docs",  .shortName = "d", .description = "Path to guides.json config file (or legacy: directory of .md files).", .maxNumParams = 1 },
+            .{ .longName = "emoji", .shortName = "e", .description = "Emoji provider: none, unicode (default), twemoji, noto, openmoji.", .maxNumParams = 1 },
+            .{ .longName = "help",  .shortName = "h", .description = "Print help information." },
         },
     });
     defer parser.deinit();
@@ -40,12 +42,18 @@ pub fn main() !void {
     const root_path = args.optionValOrDefault("root", "sample.zig");
     const project_name = args.optionValOrDefault("name", "Documentation");
 
+    const emoji_str = args.optionValOrDefault("emoji", "unicode");
+    const emoji_provider = emoji.Provider.fromStr(emoji_str) orelse blk: {
+        std.debug.print("Unknown emoji provider '{s}', using 'unicode'.\n", .{emoji_str});
+        break :blk emoji.Provider.unicode;
+    };
+
     const modules = try symbols.extractModuleGraph(allocator, root_path);
     defer symbols.deinitModules(allocator, modules);
 
     if (args.optionVal("out")) |out_path| {
         const docs_dir = args.optionVal("docs");
-        try render.renderSite(allocator, out_path, project_name, modules, docs_dir);
+        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, emoji_provider);
         std.debug.print("Generated docs in '{s}/'\n", .{out_path});
     } else {
         for (modules) |mod| {

@@ -7,8 +7,11 @@ pub const DocsOptions = struct {
     name: []const u8,
     /// Output directory for generated HTML (default: "docs").
     out: []const u8 = "docs",
-    /// Optional directory containing hand-written `.md` guide pages.
+    /// Optional path to a `guides.json` config file listing hand-written guide pages,
+    /// or a directory of flat `.md` files (legacy). See docs/guides.json for format.
     docs: ?[]const u8 = null,
+    /// Emoji provider: "none", "unicode" (default), "twemoji", "noto", "openmoji".
+    emoji: ?[]const u8 = null,
 };
 
 /// Add a documentation-generation step to the consuming project's build.
@@ -36,7 +39,8 @@ pub fn addDocsStep(b: *std.Build, options: DocsOptions) *std.Build.Step {
     run.addArgs(&.{ "--root", options.root });
     run.addArgs(&.{ "--name", options.name });
     run.addArgs(&.{ "--out", options.out });
-    if (options.docs) |d| run.addArgs(&.{ "--docs", d });
+    if (options.docs)  |d| run.addArgs(&.{ "--docs",  d });
+    if (options.emoji) |e| run.addArgs(&.{ "--emoji", e });
 
     return &run.step;
 }

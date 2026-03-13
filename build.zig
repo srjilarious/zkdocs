@@ -32,6 +32,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/symbols.zig"),
     });
 
+    const emoji_mod = b.addModule("emoji", .{
+        .root_source_file = b.path("src/emoji.zig"),
+    });
+
     const highlight_mod = b.addModule("highlight", .{
         .root_source_file = b.path("src/highlight.zig"),
     });
@@ -49,6 +53,7 @@ pub fn build(b: *std.Build) void {
     });
     render_mod.addImport("symbols", symbols_mod);
     render_mod.addImport("markdown", markdown_mod);
+    render_mod.addImport("emoji", emoji_mod);
 
     const exe = b.addExecutable(.{
         .name = "zkdocs",
@@ -60,6 +65,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("symbols", symbols_mod);
     exe.root_module.addImport("render", render_mod);
+    exe.root_module.addImport("emoji", emoji_mod);
     exe.root_module.addImport("zargunaught", zargunaught_dep.module("zargunaught"));
 
     b.installArtifact(exe);
@@ -83,4 +89,15 @@ pub fn build(b: *std.Build) void {
     const tests_run = b.addRunArtifact(tests_exe);
     const tests_step = b.step("tests", "Run unit tests");
     tests_step.dependOn(&tests_run.step);
+
+    // Self-documentation: generate zkdocs HTML docs from docs/guides.json
+    const docs_run = b.addRunArtifact(exe);
+    docs_run.addArgs(&.{
+        "--root", "src/build_helper.zig",
+        "--name", "zkdocs",
+        "--out",  "out/docs",
+        "--docs", "docs/guides.json",
+    });
+    const docs_step = b.step("docs", "Generate zkdocs HTML documentation");
+    docs_step.dependOn(&docs_run.step);
 }
