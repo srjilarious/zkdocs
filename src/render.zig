@@ -370,6 +370,9 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
     } else {
         try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{f.name});
     }
+    if (f.generic_return != null) {
+        try buf.writeAll("<div class=\"symbol-sig-row\">");
+    }
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (f.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     try buf.writeAll("<span class=\"kw\">fn </span>");
@@ -388,6 +391,9 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
         try buf.writeAll("</span>");
     }
     try buf.writeAll("</code></div>\n");
+    if (f.generic_return != null) {
+        try buf.writeAll("<span class=\"pill-generic\">generic</span></div>\n");
+    }
     if (f.doc) |doc| try writeDoc(buf, doc);
 
     if (f.generic_return) |gr| {
