@@ -48,14 +48,19 @@ pub fn main() !void {
         break :blk emoji.Provider.unicode;
     };
 
-    const modules = try symbols.extractModuleGraph(allocator, root_path);
-    defer symbols.deinitModules(allocator, modules);
-
     if (args.optionVal("out")) |out_path| {
         const docs_dir = args.optionVal("docs");
-        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, emoji_provider);
-        std.debug.print("Generated docs in '{s}/'\n", .{out_path});
+        const total_steps: usize = 3 + @as(usize, if (docs_dir != null) 1 else 0);
+        var progress = render.Progress.init(total_steps);
+
+        progress.begin("extracting symbols");
+        const modules = try symbols.extractModuleGraph(allocator, root_path);
+        defer symbols.deinitModules(allocator, modules);
+
+        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, emoji_provider, &progress);
     } else {
+        const modules = try symbols.extractModuleGraph(allocator, root_path);
+        defer symbols.deinitModules(allocator, modules);
         for (modules) |mod| {
             std.debug.print("=== module '{s}' ===\n    path: {s}\n", .{ mod.name, mod.path });
             printSymbols(mod.symbols.items, 1);

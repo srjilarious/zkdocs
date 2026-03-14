@@ -6,6 +6,34 @@ const emoji = @import("emoji");
 const CSS = @embedFile("assets/style.css");
 
 // ---------------------------------------------------------------------------
+// Progress reporting
+// ---------------------------------------------------------------------------
+
+pub const Progress = struct {
+    step:  usize = 0,
+    total: usize,
+
+    pub fn init(total: usize) Progress { return .{ .total = total }; }
+
+    /// Print a numbered step header and advance the step counter.
+    pub fn begin(self: *Progress, label: []const u8) void {
+        self.step += 1;
+        std.debug.print("  [{d}/{d}] {s}\n", .{ self.step, self.total, label });
+    }
+
+    /// Overwrite the progress line with the current filename (no newline).
+    /// Uses ANSI erase-to-EOL so shorter names don't leave trailing chars.
+    pub fn setCurrent(name: []const u8) void {
+        std.debug.print("        {s}\x1b[K\r", .{name});
+    }
+
+    /// Advance past the progress line (call after a file-level loop).
+    pub fn endFiles() void {
+        std.debug.print("\n", .{});
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -684,6 +712,7 @@ pub fn renderSite(
     mods: []const symbols.Module,
     docs_dir: ?[]const u8,
     emoji_provider: emoji.Provider,
+    progress: *Progress,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
     defer out_dir.close();
@@ -696,6 +725,7 @@ pub fn renderSite(
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
 
     // ── index.html ──────────────────────────────────────────────────────────
+    progress.begin("writing index");
     {
         var buf = Buf.init(allocator, emoji_provider);
         defer buf.deinit();
@@ -772,7 +802,15 @@ pub fn renderSite(
     }
 
     // ── api/<module>.html ────────────────────────────────────────────────────
+    {
+        var label_buf: [64]u8 = undefined;
+        const label = std.fmt.bufPrint(&label_buf, "rendering api ({d} module{s})", .{
+            mods.len, if (mods.len == 1) "" else "s",
+        }) catch "rendering api";
+        progress.begin(label);
+    }
     for (mods) |mod| {
+        Progress.setCurrent(mod.name);
         var buf = Buf.init(allocator, emoji_provider);
         defer buf.deinit();
 
@@ -842,16 +880,33 @@ pub fn renderSite(
         defer file.close();
         try buf.flush(file);
     }
+    if (mods.len > 0) Progress.endFiles();
 
     // ── guide pages ──────────────────────────────────────────────────────────
-    for (guides) |item| switch (item) {
-        .entry => |e| try renderGuidePage(
-            allocator, &out_dir, e, project_name, mods, guides, emoji_provider,
-        ),
-        .section => |s| for (s.entries) |e| try renderGuidePage(
-            allocator, &out_dir, e, project_name, mods, guides, emoji_provider,
-        ),
-    };
+    if (guidesHaveEntries(guides)) {
+        var n_guides: usize = 0;
+        for (guides) |item| switch (item) {
+            .entry   => n_guides += 1,
+            .section => |s| n_guides += s.entries.len,
+        };
+        var label_buf: [64]u8 = undefined;
+        const label = std.fmt.bufPrint(&label_buf, "rendering guides ({d} page{s})", .{
+            n_guides, if (n_guides == 1) "" else "s",
+        }) catch "rendering guides";
+        progress.begin(label);
+
+        for (guides) |item| switch (item) {
+            .entry => |e| {
+                Progress.setCurrent(e.slug);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider);
+            },
+            .section => |s| for (s.entries) |e| {
+                Progress.setCurrent(e.slug);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider);
+            },
+        };
+        Progress.endFiles();
+    }
 }
 
 fn renderGuidePage(
