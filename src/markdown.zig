@@ -4,12 +4,25 @@ const highlight = @import("highlight");
 
 /// Render `markdown` to an HTML fragment (no DOCTYPE/html/body wrapper).
 pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) ![]const u8 {
-    return zmd.parse(allocator, markdown_text, .{
+    // Extract GFM tables before zmd sees them; zmd would wrap them in <p> tags.
+    var tables: std.ArrayList([]const u8) = .{};
+    defer {
+        for (tables.items) |t| allocator.free(t);
+        tables.deinit(allocator);
+    }
+
+    const stripped = try extractTables(allocator, markdown_text, &tables);
+    defer allocator.free(stripped);
+
+    const html = try zmd.parse(allocator, stripped, .{
         .root  = rootFmt,
         .code  = codeFmt,
         .block = blockFmt,
         .h2    = h2Fmt,
     });
+    defer allocator.free(html);
+
+    return restoreTables(allocator, html, tables.items);
 }
 
 /// Produce a URL-safe slug from a heading string.
@@ -37,6 +50,226 @@ pub fn slugify(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     }
 
     return slug.toOwnedSlice(allocator);
+}
+
+// ── Table extraction ─────────────────────────────────────────────────────────
+
+// Sentinel prefix embedded in the stripped markdown so we can find and swap
+// back later. Chosen to be unlikely in normal doc text.
+const sentinel_prefix = "ZKDOCSTABLE";
+
+/// Scan `md` for GFM table blocks (lines starting with `|` where the second
+/// line is a separator `|---|---|`). Each table block is replaced by a unique
+/// sentinel string, and its rendered HTML is appended to `out_tables`.
+fn extractTables(
+    allocator: std.mem.Allocator,
+    md: []const u8,
+    out_tables: *std.ArrayList([]const u8),
+) ![]const u8 {
+    var result: std.ArrayList(u8) = .{};
+    errdefer result.deinit(allocator);
+
+    // Collect lines; keep track of raw slices into `md`.
+    var line_iter = std.mem.splitScalar(u8, md, '\n');
+    var lines: std.ArrayList([]const u8) = .{};
+    defer lines.deinit(allocator);
+    while (line_iter.next()) |ln| try lines.append(allocator, ln);
+
+    var i: usize = 0;
+    while (i < lines.items.len) {
+        const line = lines.items[i];
+        const trimmed = std.mem.trim(u8, line, " \t");
+
+        // Table starts when this line and the next both begin with `|`, and
+        // the next line is a separator row.
+        if (trimmed.len > 0 and trimmed[0] == '|' and
+            i + 1 < lines.items.len)
+        {
+            const next = std.mem.trim(u8, lines.items[i + 1], " \t");
+            if (next.len > 0 and next[0] == '|' and isTableSeparator(next)) {
+                // Collect all consecutive `|`-starting lines after the separator.
+                var end = i + 2;
+                while (end < lines.items.len) {
+                    const row = std.mem.trim(u8, lines.items[end], " \t");
+                    if (row.len == 0 or row[0] != '|') break;
+                    end += 1;
+                }
+
+                // Render the table block to HTML.
+                var tbl: std.ArrayList(u8) = .{};
+                errdefer tbl.deinit(allocator);
+                try tbl.appendSlice(allocator, "<table>\n<thead>\n<tr>");
+                try appendTableCells(&tbl, allocator, line, true);
+                try tbl.appendSlice(allocator, "</tr>\n</thead>\n<tbody>\n");
+                var r = i + 2;
+                while (r < end) : (r += 1) {
+                    try tbl.appendSlice(allocator, "<tr>");
+                    try appendTableCells(&tbl, allocator, lines.items[r], false);
+                    try tbl.appendSlice(allocator, "</tr>\n");
+                }
+                try tbl.appendSlice(allocator, "</tbody>\n</table>");
+
+                const idx = out_tables.items.len;
+                try out_tables.append(allocator, try tbl.toOwnedSlice(allocator));
+
+                // Emit sentinel (blank lines around it so zmd treats it as its
+                // own paragraph, making it easy to strip the wrapping <p>).
+                try result.writer(allocator).print("\n\n{s}{d}\n\n", .{ sentinel_prefix, idx });
+                i = end;
+                continue;
+            }
+        }
+
+        try result.appendSlice(allocator, line);
+        try result.append(allocator, '\n');
+        i += 1;
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Returns true when `line` is a GFM table separator (`|---|:---:|` etc.).
+fn isTableSeparator(line: []const u8) bool {
+    var has_dash = false;
+    for (line) |c| {
+        switch (c) {
+            '|', '-', ':', ' ', '\t' => {},
+            else => return false,
+        }
+        if (c == '-') has_dash = true;
+    }
+    return has_dash;
+}
+
+/// Append `<th>` or `<td>` elements for one row of a pipe-delimited table.
+/// Cells are HTML-escaped; backtick spans become `<code>`.
+fn appendTableCells(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    line: []const u8,
+    header: bool,
+) !void {
+    const tag = if (header) "th" else "td";
+    var parts = std.mem.splitScalar(u8, line, '|');
+    _ = parts.next(); // discard empty before leading `|`
+    while (parts.next()) |raw| {
+        // peek: if there's nothing after this split, it's the trailing empty
+        const cell = std.mem.trim(u8, raw, " \t");
+        // The last split after the trailing `|` is always empty — skip it.
+        // We detect it by peeking: if rest of string is empty/whitespace.
+        if (cell.len == 0 and parts.peek() == null) break;
+
+        try out.writer(allocator).print("<{s}>", .{tag});
+        try appendInline(out, allocator, cell);
+        try out.writer(allocator).print("</{s}>", .{tag});
+    }
+}
+
+/// Minimal inline renderer: handles `` `code` `` spans and HTML-escapes the rest.
+fn appendInline(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] == '`') {
+            if (std.mem.indexOfScalar(u8, text[i + 1 ..], '`')) |end| {
+                try out.appendSlice(allocator, "<code>");
+                try htmlEscapeInto(out, allocator, text[i + 1 .. i + 1 + end]);
+                try out.appendSlice(allocator, "</code>");
+                i += 1 + end + 1;
+                continue;
+            }
+        }
+        // HTML-escape single character.
+        switch (text[i]) {
+            '<'  => try out.appendSlice(allocator, "&lt;"),
+            '>'  => try out.appendSlice(allocator, "&gt;"),
+            '&'  => try out.appendSlice(allocator, "&amp;"),
+            else => try out.append(allocator, text[i]),
+        }
+        i += 1;
+    }
+}
+
+fn htmlEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '<'  => try out.appendSlice(allocator, "&lt;"),
+        '>'  => try out.appendSlice(allocator, "&gt;"),
+        '&'  => try out.appendSlice(allocator, "&amp;"),
+        else => try out.append(allocator, c),
+    };
+}
+
+/// Replace `<p>ZKDOCS_TABLE_N</p>` (or bare `ZKDOCS_TABLE_N`) with the
+/// pre-rendered HTML tables stored in `tables`.
+fn restoreTables(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    tables: []const []const u8,
+) ![]const u8 {
+    if (tables.len == 0) return allocator.dupe(u8, html);
+
+    var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
+
+    var rest = html;
+    while (rest.len > 0) {
+        // Find the next sentinel occurrence (possibly wrapped in <p>...</p>).
+        const found = findSentinel(rest) orelse {
+            try out.appendSlice(allocator, rest);
+            break;
+        };
+
+        try out.appendSlice(allocator, rest[0..found.pre_start]);
+
+        // Parse the index from the sentinel text.
+        const idx = std.fmt.parseInt(usize, found.index_str, 10) catch {
+            try out.appendSlice(allocator, rest[found.pre_start..found.post_end]);
+            rest = rest[found.post_end..];
+            continue;
+        };
+        if (idx < tables.len) {
+            try out.appendSlice(allocator, tables[idx]);
+        }
+        rest = rest[found.post_end..];
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+const SentinelMatch = struct {
+    pre_start:  usize,   // start of the whole match (incl. possible <p>)
+    index_str:  []const u8,
+    post_end:   usize,   // end of the whole match (incl. possible </p>)
+};
+
+fn findSentinel(html: []const u8) ?SentinelMatch {
+    const idx = std.mem.indexOf(u8, html, sentinel_prefix) orelse return null;
+
+    // Walk forward past the digits.
+    var end = idx + sentinel_prefix.len;
+    while (end < html.len and std.ascii.isDigit(html[end])) end += 1;
+    const index_str = html[idx + sentinel_prefix.len .. end];
+
+    // Expand to include any surrounding <p> / </p> and whitespace.
+    var pre_start = idx;
+    var post_end  = end;
+
+    // Check for <p> before (with optional whitespace between <p> and sentinel).
+    const before = html[0..pre_start];
+    if (std.mem.lastIndexOf(u8, before, "<p>")) |p_idx| {
+        const between = std.mem.trim(u8, html[p_idx + 3 .. pre_start], " \t\r\n");
+        if (between.len == 0) pre_start = p_idx;
+    }
+    // Check for </p> after.
+    const after = std.mem.trimLeft(u8, html[post_end..], " \t\r\n");
+    if (std.mem.startsWith(u8, after, "</p>")) {
+        post_end = html.len - after.len + 4;
+    }
+
+    return .{
+        .pre_start  = pre_start,
+        .index_str  = index_str,
+        .post_end   = post_end,
+    };
 }
 
 // ── Formatters ──────────────────────────────────────────────────────────────

@@ -152,7 +152,7 @@ fn cdnUrl(allocator: std.mem.Allocator, cp: u21, provider: Provider) ![]const u8
     return switch (provider) {
         .twemoji => std.fmt.allocPrint(
             allocator,
-            "https://cdn.jsdelivr.net/npm/twemoji@14.0.2/assets/svg/{x}.svg",
+            "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/{x}.svg",
             .{@as(u32, cp)},
         ),
         .noto => std.fmt.allocPrint(
