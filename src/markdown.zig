@@ -98,7 +98,7 @@ fn extractTables(
                 // Render the table block to HTML.
                 var tbl: std.ArrayList(u8) = .{};
                 errdefer tbl.deinit(allocator);
-                try tbl.appendSlice(allocator, "<table>\n<thead>\n<tr>");
+                try tbl.appendSlice(allocator, "<table class=\"fields-table\">\n<thead>\n<tr>");
                 try appendTableCells(&tbl, allocator, line, true);
                 try tbl.appendSlice(allocator, "</tr>\n</thead>\n<tbody>\n");
                 var r = i + 2;
