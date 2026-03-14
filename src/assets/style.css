@@ -1,6 +1,7 @@
 /* zkdocs — Zig documentation theme */
 :root {
   --sidebar-w: 220px;
+  --toc-w:     200px;
   --accent:    #f7a41d;
   --bg:        #1b1b2e;
   --bg-card:   rgba(255,255,255,.04);
@@ -70,6 +71,7 @@ nav.sidebar ul li a.active { color: var(--accent); background: rgba(247,164,29,.
 /* ── Main content ── */
 main {
   margin-left: var(--sidebar-w);
+  margin-right: var(--toc-w);
   padding: 2.5rem 3rem;
   max-width: 880px;
   flex: 1;
@@ -291,18 +293,29 @@ details.nav-subsection > summary::before {
 details.nav-subsection[open] > summary::before { transform: rotate(90deg); }
 details.nav-subsection > ul { margin: .1rem 0 .2rem .4rem; }
 
-/* ── Per-page on-this-page TOC ── */
-details.page-toc {
-  margin-top: 1.5rem;
-  padding-top: .75rem;
-  border-top: 1px solid var(--border);
+/* ── Right-column "On this page" TOC ── */
+aside.page-toc {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: var(--toc-w);
+  height: 100vh;
+  overflow-y: auto;
+  padding: 1.75rem .75rem 2rem 1rem;
+  border-left: 1px solid var(--border);
+  background: var(--bg-sidebar);
 }
-details.page-toc > ul {
+aside.page-toc h4 {
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--muted);
+  margin-bottom: .4rem;
+}
+aside.page-toc > ul {
   list-style: none;
-  padding: 0;
-  margin: .3rem 0 0;
 }
-details.page-toc > ul > li > a {
+aside.page-toc > ul > li > a {
   display: block;
   padding: .2rem .4rem;
   font-size: .82rem;
@@ -310,7 +323,7 @@ details.page-toc > ul > li > a {
   text-decoration: none;
   border-radius: 3px;
 }
-details.page-toc > ul > li > a:hover { color: var(--accent); }
+aside.page-toc > ul > li > a:hover { color: var(--accent); }
 
 .toc-children {
   list-style: none;
@@ -354,6 +367,88 @@ img.emoji {
 
 /* ── Responsive ── */
 @media (max-width: 700px) {
-  nav.sidebar { display: none; }
-  main { margin-left: 0; padding: 1.25rem; }
+  nav.sidebar, aside.page-toc { display: none; }
+  main { margin-left: 0; margin-right: 0; padding: 1.25rem; }
+}
+
+/* ═══════════════════════════════════════════════
+   Monokai theme
+   ─────────────────────────────────────────────── */
+[data-theme="monokai"] {
+  --accent:    #a6e22e;
+  --bg:        #272822;
+  --bg-card:   rgba(255,255,255,.06);
+  --bg-sidebar:#1e1f1c;
+  --text:      #f8f8f2;
+  --muted:     #75715e;
+  --border:    #3e3d32;
+  --fn:        #a6e22e;
+  --kw:        #f92672;
+  --type:      #66d9ef;
+  --str:       #e6db74;
+  --num:       #ae81ff;
+}
+[data-theme="monokai"] .hl-comment { color: #75715e; }
+[data-theme="monokai"] .pill-generic {
+  color: #66d9ef;
+  background: rgba(102,217,239,.12);
+  border-color: rgba(102,217,239,.3);
+}
+
+/* ═══════════════════════════════════════════════
+   VSCode Light theme
+   ─────────────────────────────────────────────── */
+[data-theme="vscode-light"] {
+  --accent:    #0078d4;
+  --bg:        #ffffff;
+  --bg-card:   #f8f8f8;
+  --bg-sidebar:#f3f3f3;
+  --text:      #1f1f1f;
+  --muted:     #717171;
+  --border:    #d4d4d4;
+  --fn:        #795e26;
+  --kw:        #0000ff;
+  --type:      #267f99;
+  --str:       #a31515;
+  --num:       #098658;
+}
+[data-theme="vscode-light"] h1                     { color: #1f1f1f; }
+[data-theme="vscode-light"] .guide-content h1      { color: #1f1f1f; }
+[data-theme="vscode-light"] .symbol-doc            { color: #555; }
+[data-theme="vscode-light"] .symbol-doc code,
+[data-theme="vscode-light"] .guide-content code    { background: #ececec; }
+[data-theme="vscode-light"] .symbol-doc pre,
+[data-theme="vscode-light"] .guide-content pre     { background: #ececec; }
+[data-theme="vscode-light"] .symbol-decls .symbol  { border-color: rgba(0,0,0,.07); }
+[data-theme="vscode-light"] .hl-comment            { color: #008000; }
+[data-theme="vscode-light"] .fields-table td       { border-bottom-color: rgba(0,0,0,.06); }
+[data-theme="vscode-light"] nav.sidebar ul li a.active { background: rgba(0,120,212,.1); }
+[data-theme="vscode-light"] .pill-generic {
+  color: #0078d4;
+  background: rgba(0,120,212,.08);
+  border-color: rgba(0,120,212,.25);
+}
+
+/* ═══════════════════════════════════════════════
+   VSCode Dark theme
+   ─────────────────────────────────────────────── */
+[data-theme="vscode-dark"] {
+  --accent:    #4ec9b0;
+  --bg:        #1e1e1e;
+  --bg-card:   rgba(255,255,255,.04);
+  --bg-sidebar:#252526;
+  --text:      #d4d4d4;
+  --muted:     #858585;
+  --border:    #3c3c3c;
+  --fn:        #dcdcaa;
+  --kw:        #569cd6;
+  --type:      #4ec9b0;
+  --str:       #ce9178;
+  --num:       #b5cea8;
+}
+[data-theme="vscode-dark"] .hl-comment { color: #6a9955; }
+[data-theme="vscode-dark"] .pill-generic {
+  color: #4ec9b0;
+  background: rgba(78,201,176,.12);
+  border-color: rgba(78,201,176,.3);
 }

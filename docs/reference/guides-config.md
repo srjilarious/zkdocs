@@ -1,26 +1,71 @@
-# Guides Configuration
+# Site Configuration
 
-zkdocs supports hand-written Markdown guide pages alongside the auto-extracted
-API documentation. Guides are configured via a `guides.json` file that
-describes the page structure, titles, and source paths.
+zkdocs is configured via a `zkdocs.conf` file — a JSON object that describes
+the project name, source files, color theme, emoji settings, and the
+hand-written guide pages to include alongside the auto-extracted API docs.
 
 ## Config File Format
 
-`guides.json` is a JSON array. Each element is either a **top-level guide
-entry** or a **section** containing multiple entries:
+`zkdocs.conf` is a JSON object:
 
 ```json
-[
-  { "title": "Getting Started", "src": "getting-started.md" },
-  {
-    "section": "Reference",
-    "entries": [
-      { "title": "CLI Options",  "src": "reference/cli.md" },
-      { "title": "API Overview", "src": "reference/api.md" }
-    ]
-  }
-]
+{
+  "name": "MyLib",
+  "sources": ["src/root.zig"],
+  "theme": "default",
+  "emoji": "unicode",
+  "guides": [
+    { "title": "Getting Started", "src": "getting-started.md" },
+    {
+      "section": "Reference",
+      "entries": [
+        { "title": "CLI Options",  "src": "reference/cli.md" },
+        { "title": "API Overview", "src": "reference/api.md" }
+      ]
+    }
+  ]
+}
 ```
+
+### Top-level fields
+
+| Field     | Type             | Description |
+|-----------|------------------|-------------|
+| `name`    | string           | Project name shown in the site header and `<title>`. |
+| `sources` | array of strings | Root source file(s) for symbol extraction, relative to the conf file. |
+| `theme`   | string           | Color theme: `"default"`, `"monokai"`, `"vscode-light"`, or `"vscode-dark"`. |
+| `emoji`   | string           | Emoji provider: `"none"`, `"unicode"`, `"twemoji"`, `"noto"`, `"openmoji"`. |
+| `guides`  | array            | Ordered list of guide pages and sections (see below). |
+
+All fields are optional; any value not present falls back to the equivalent
+CLI flag, and then to the built-in default.
+
+## Color Themes
+
+### `default`
+
+The built-in dark theme. Deep navy background with a warm amber accent.
+Syntax colors inspired by Material / One Dark.
+
+### `monokai`
+
+Dark theme with Monokai palette: charcoal background, green functions,
+pink/red keywords, cyan types, and yellow strings.
+
+### `vscode-light`
+
+Light theme matching VS Code's default light color scheme: white background,
+blue keywords, teal types, dark-gold function names, and red string literals.
+
+### `vscode-dark`
+
+Dark theme matching VS Code Dark+: charcoal background (`#1e1e1e`), blue
+keywords, teal types, gold function names, and orange/tan strings.
+
+## Guides Array
+
+Each element of `"guides"` is either a **top-level guide entry** or a
+**named section** containing multiple entries:
 
 ### Top-level entry
 
@@ -31,7 +76,7 @@ entry** or a **section** containing multiple entries:
 - `title` — displayed in the sidebar and as the browser tab title. If omitted,
   the first H1 heading in the Markdown file is used; if there is none, the
   filename stem is used.
-- `src` — path to the Markdown source file, **relative to `guides.json`**.
+- `src` — path to the Markdown source file, **relative to `zkdocs.conf`**.
 
 ### Section
 
@@ -63,12 +108,12 @@ Guides
 
 ## Source Paths
 
-`src` values are resolved relative to the `guides.json` file. You can
+`src` values are resolved relative to the `zkdocs.conf` file. You can
 organise your Markdown files however you like:
 
 ```
-docs-src/
-  guides.json
+docs/
+  zkdocs.conf
   getting-started.md
   reference/
     cli.md
@@ -83,10 +128,17 @@ extension replaced by `.html`:
 
 ## Passing the Config to zkdocs
 
-Use the `--docs` flag:
+Use the `--conf` flag:
 
 ```sh
-zkdocs --root src/root.zig --name MyLib --out site/ --docs docs-src/guides.json
+zkdocs --out site/ --conf docs/zkdocs.conf
+```
+
+Individual CLI flags override the corresponding conf values:
+
+```sh
+# Use conf but switch to the monokai theme
+zkdocs --out site/ --conf docs/zkdocs.conf --theme monokai
 ```
 
 Or via `addDocsStep` in `build.zig`:
@@ -96,13 +148,23 @@ const docs = zkdocs.addDocsStep(b, .{
     .root = "src/root.zig",
     .name = "MyLib",
     .out  = "site",
-    .docs = "docs-src/guides.json",
+    .conf = "docs/zkdocs.conf",
 });
+```
+
+## Legacy: guides-only JSON
+
+If you pass a `.json` file whose root is an array (the old `guides.json`
+format), zkdocs still accepts it via the `--docs` flag for backward
+compatibility. Nested sections are supported.
+
+```sh
+zkdocs --root src/root.zig --name MyLib --out site/ --docs docs/guides.json
 ```
 
 ## Legacy: Directory-based Guides
 
-If `--docs` points to a directory (no `.json` extension), zkdocs falls back to
+If `--docs` points to a directory (no file extension), zkdocs falls back to
 the legacy behaviour: all `.md` files in that directory are included as
 top-level guide entries, sorted alphabetically by filename. No nested sections
 are supported in this mode.

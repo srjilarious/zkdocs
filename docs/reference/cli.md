@@ -10,12 +10,18 @@ zkdocs [options]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--root <path>` | `-r` | Root Zig source file to extract symbols from. Defaults to `sample.zig`. |
-| `--name <name>` | `-n` | Display name shown in the site title and navigation. |
+| `--conf <path>` | `-c` | Path to a `zkdocs.conf` project config file. |
+| `--root <path>` | `-r` | Root Zig source file to extract symbols from (overrides conf). |
+| `--name <name>` | `-n` | Display name shown in the site title and navigation (overrides conf). |
 | `--out <dir>` | `-o` | Output directory for the generated HTML site. |
-| `--docs <path>` | `-d` | Path to a `guides.json` config file (or a flat directory of `.md` files). |
-| `--emoji <provider>` | `-e` | Emoji provider: `none`, `unicode` (default), `twemoji`, `noto`, `openmoji`. |
+| `--docs <path>` | `-d` | Path to a legacy `guides.json` file or a flat directory of `.md` files. |
+| `--theme <name>` | `-t` | Color theme: `default`, `monokai`, `vscode-light`, `vscode-dark` (overrides conf). |
+| `--emoji <provider>` | `-e` | Emoji provider: `none`, `unicode` (default), `twemoji`, `noto`, `openmoji` (overrides conf). |
 | `--help` | `-h` | Print help information. |
+
+When `--conf` is given, all settings in the config file are used as defaults.
+Individual flags (`--root`, `--name`, `--theme`, `--emoji`) override the
+corresponding config values.
 
 ## Output Layout
 
@@ -28,7 +34,7 @@ docs/
   guide/<slug>.html    — one page per guide entry
 ```
 
-Guide slugs mirror the `src` paths in `guides.json` with the `.md` extension
+Guide slugs mirror the `src` paths in `zkdocs.conf` with the `.md` extension
 removed. A config entry with `"src": "reference/cli.md"` generates
 `guide/reference/cli.html`.
 

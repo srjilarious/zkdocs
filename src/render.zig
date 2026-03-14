@@ -6,6 +6,35 @@ const emoji = @import("emoji");
 const CSS = @embedFile("assets/style.css");
 
 // ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+pub const Theme = enum {
+    default,
+    monokai,
+    vscode_light,
+    vscode_dark,
+
+    pub fn fromStr(s: []const u8) ?Theme {
+        if (std.mem.eql(u8, s, "default"))      return .default;
+        if (std.mem.eql(u8, s, "monokai"))      return .monokai;
+        if (std.mem.eql(u8, s, "vscode-light")) return .vscode_light;
+        if (std.mem.eql(u8, s, "vscode-dark"))  return .vscode_dark;
+        return null;
+    }
+
+    /// Returns the `data-theme` attribute value, or null for the default theme.
+    pub fn toAttr(self: Theme) ?[]const u8 {
+        return switch (self) {
+            .default      => null,
+            .monokai      => "monokai",
+            .vscode_light => "vscode-light",
+            .vscode_dark  => "vscode-dark",
+        };
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Progress reporting
 // ---------------------------------------------------------------------------
 
@@ -92,9 +121,10 @@ const Buf = struct {
     list: std.ArrayList(u8),
     alloc: std.mem.Allocator,
     emoji_provider: emoji.Provider,
+    theme: Theme,
 
-    fn init(alloc: std.mem.Allocator, provider: emoji.Provider) Buf {
-        return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider };
+    fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
+        return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider, .theme = theme };
     }
     fn deinit(self: *Buf) void {
         self.list.deinit(self.alloc);
@@ -147,9 +177,8 @@ fn writeDoc(buf: *Buf, doc: []const u8) !void {
 // Page header / nav / footer
 // ---------------------------------------------------------------------------
 
-/// Write the page <head>, <body>, and the left nav sidebar.
-/// NOTE: does NOT close </nav> or open <main> — call writeNavClose after
-/// appending any per-page TOC content into the nav.
+/// Write the page <head>, <body>, the left nav sidebar, and open <main>.
+/// The per-page TOC aside is written after the main content via writeApiToc / writeGuideToc.
 fn writeHeader(
     buf: *Buf,
     title: []const u8,
@@ -160,9 +189,10 @@ fn writeHeader(
     active_guide: ?[]const u8,
     prefix: []const u8,
 ) !void {
+    try buf.writeAll("<!DOCTYPE html>\n<html lang=\"en\"");
+    if (buf.theme.toAttr()) |attr| try buf.print(" data-theme=\"{s}\"", .{attr});
     try buf.print(
-        \\<!DOCTYPE html>
-        \\<html lang="en">
+        \\>
         \\<head>
         \\<meta charset="UTF-8">
         \\<meta name="viewport" content="width=device-width,initial-scale=1">
@@ -181,18 +211,6 @@ fn writeHeader(
     , .{ CSS, prefix });
     try htmlEscape(buf, project_name);
     try buf.writeAll("</a>\n");
-
-    if (mods.len > 0) {
-        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
-        for (mods) |mod| {
-            const active = if (active_module) |am| std.mem.eql(u8, am, mod.name) else false;
-            const cls: []const u8 = if (active) " class=\"active\"" else "";
-            try buf.print("<li><a href=\"{s}/api/{s}.html\"{s}>", .{ prefix, mod.name, cls });
-            try htmlEscape(buf, mod.name);
-            try buf.writeAll("</a></li>\n");
-        }
-        try buf.writeAll("</ul>\n</details>\n");
-    }
 
     if (guidesHaveEntries(guides)) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Guides</summary>\n<ul>\n");
@@ -232,11 +250,19 @@ fn writeHeader(
         }
         try buf.writeAll("</ul>\n</details>\n");
     }
-    // Caller writes per-page TOC here, then calls writeNavClose.
-}
 
-/// Close the nav sidebar and open <main>.
-fn writeNavClose(buf: *Buf) !void {
+    if (mods.len > 0) {
+        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
+        for (mods) |mod| {
+            const active = if (active_module) |am| std.mem.eql(u8, am, mod.name) else false;
+            const cls: []const u8 = if (active) " class=\"active\"" else "";
+            try buf.print("<li><a href=\"{s}/api/{s}.html\"{s}>", .{ prefix, mod.name, cls });
+            try htmlEscape(buf, mod.name);
+            try buf.writeAll("</a></li>\n");
+        }
+        try buf.writeAll("</ul>\n</details>\n");
+    }
+
     try buf.writeAll("</nav>\n<main>\n");
 }
 
@@ -267,7 +293,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
     }
     if (!has_types and !has_fns and !has_consts) return;
 
-    try buf.writeAll("<details class=\"nav-section page-toc\" open>\n<summary>On this page</summary>\n<ul>\n");
+    try buf.writeAll("<aside class=\"page-toc\">\n<h4>On this page</h4>\n<ul>\n");
 
     if (has_types) {
         try buf.writeAll("<li><a href=\"#section-types\">Types</a>\n<ul class=\"toc-children\">\n");
@@ -354,7 +380,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
         try buf.writeAll("</ul>\n</li>\n");
     }
 
-    try buf.writeAll("</ul>\n</details>\n");
+    try buf.writeAll("</ul>\n</aside>\n");
 }
 
 /// Emit a collapsible "On this page" TOC for a guide (markdown) page.
@@ -371,7 +397,7 @@ fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
     }
     if (!has_h2) return;
 
-    try buf.writeAll("<details class=\"nav-section page-toc\" open>\n<summary>On this page</summary>\n<ul class=\"toc-children\">\n");
+    try buf.writeAll("<aside class=\"page-toc\">\n<h4>On this page</h4>\n<ul class=\"toc-children\">\n");
 
     var lines = std.mem.splitScalar(u8, raw_content, '\n');
     while (lines.next()) |line| {
@@ -385,7 +411,7 @@ fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
         try buf.writeAll("</a></li>\n");
     }
 
-    try buf.writeAll("</ul>\n</details>\n");
+    try buf.writeAll("</ul>\n</aside>\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -584,8 +610,22 @@ fn loadGuidesFromConfig(
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
     defer parsed.deinit();
 
-    if (parsed.value != .array) {
-        std.log.warn("Guides config '{s}' must be a JSON array", .{config_path});
+    // Support both the old array-root format and the new object-root format
+    // (where guides are nested under a "guides" key).
+    const guides_array = switch (parsed.value) {
+        .array  => parsed.value,
+        .object => |obj| obj.get("guides") orelse {
+            std.log.warn("Config '{s}': no 'guides' key found", .{config_path});
+            return &.{};
+        },
+        else => {
+            std.log.warn("Config '{s}': expected a JSON array or object", .{config_path});
+            return &.{};
+        },
+    };
+
+    if (guides_array != .array) {
+        std.log.warn("Config '{s}': 'guides' value must be a JSON array", .{config_path});
         return &.{};
     }
 
@@ -595,7 +635,7 @@ fn loadGuidesFromConfig(
         items.deinit(allocator);
     }
 
-    for (parsed.value.array.items) |json_item| {
+    for (guides_array.array.items) |json_item| {
         if (json_item != .object) continue;
         const obj = json_item.object;
 
@@ -688,10 +728,147 @@ fn loadGuidesFromDir(
 }
 
 fn loadGuides(allocator: std.mem.Allocator, docs_path: []const u8) ![]GuideNavItem {
-    return if (std.mem.endsWith(u8, docs_path, ".json"))
+    return if (std.mem.endsWith(u8, docs_path, ".json") or
+               std.mem.endsWith(u8, docs_path, ".conf"))
         loadGuidesFromConfig(allocator, docs_path)
     else
         loadGuidesFromDir(allocator, docs_path);
+}
+
+// ---------------------------------------------------------------------------
+// Full site config (zkdocs.conf)
+// ---------------------------------------------------------------------------
+
+/// Parsed contents of a `zkdocs.conf` file.
+/// All string fields are heap-allocated; call `deinit` to free them.
+pub const SiteConf = struct {
+    /// Project name (`"name"` key), or null if absent.
+    name: ?[]const u8,
+    /// Root source file paths (`"sources"` array), or null if absent.
+    sources: ?[][]const u8,
+    /// Color theme (`"theme"` key), defaults to `.default`.
+    theme: Theme,
+    /// Emoji provider string (`"emoji"` key), or null if absent.
+    emoji: ?[]const u8,
+    /// Parsed guide nav items (`"guides"` array).
+    guides: []GuideNavItem,
+
+    pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
+        if (self.name) |n| allocator.free(n);
+        if (self.sources) |srcs| {
+            for (srcs) |s| allocator.free(s);
+            allocator.free(srcs);
+        }
+        if (self.emoji) |e| allocator.free(e);
+        freeGuides(allocator, self.guides);
+    }
+};
+
+/// Parse a `zkdocs.conf` JSON file and return a `SiteConf`.
+/// The caller owns the result and must call `result.deinit(allocator)`.
+pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteConf {
+    const raw = try std.fs.cwd().readFileAlloc(allocator, conf_path, 2 * 1024 * 1024);
+    defer allocator.free(raw);
+
+    const conf_dir = std.fs.path.dirname(conf_path) orelse ".";
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidConfig;
+    const obj = parsed.value.object;
+
+    // --- name ---
+    const name: ?[]const u8 = if (obj.get("name")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (name) |n| allocator.free(n);
+
+    // --- sources ---
+    var sources: ?[][]const u8 = null;
+    errdefer if (sources) |srcs| {
+        for (srcs) |s| allocator.free(s);
+        allocator.free(srcs);
+    };
+    if (obj.get("sources")) |sv| if (sv == .array) {
+        var list = std.ArrayList([]const u8){};
+        errdefer {
+            for (list.items) |s| allocator.free(s);
+            list.deinit(allocator);
+        }
+        for (sv.array.items) |item| {
+            if (item != .string) continue;
+            // Resolve each source path relative to the conf file directory.
+            const resolved = try std.fs.path.join(allocator, &.{ conf_dir, item.string });
+            try list.append(allocator, resolved);
+        }
+        sources = try list.toOwnedSlice(allocator);
+    };
+
+    // --- theme ---
+    const theme: Theme = if (obj.get("theme")) |tv|
+        if (tv == .string) Theme.fromStr(tv.string) orelse .default else .default
+    else
+        .default;
+
+    // --- emoji ---
+    const ep: ?[]const u8 = if (obj.get("emoji")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (ep) |e| allocator.free(e);
+
+    // --- guides ---
+    var guides: []GuideNavItem = &.{};
+    if (obj.get("guides")) |gv| if (gv == .array) {
+        var items = std.ArrayList(GuideNavItem){};
+        errdefer {
+            for (items.items) |*it| freeNavItem(allocator, it);
+            items.deinit(allocator);
+        }
+        for (gv.array.items) |json_item| {
+            if (json_item != .object) continue;
+            const item_obj = json_item.object;
+            if (item_obj.get("section")) |sec_val| {
+                if (sec_val != .string) continue;
+                const sec_title = try allocator.dupe(u8, sec_val.string);
+                errdefer allocator.free(sec_title);
+                var sec_entries = std.ArrayList(GuideEntry){};
+                errdefer {
+                    for (sec_entries.items) |*e| freeGuideEntry(allocator, e);
+                    sec_entries.deinit(allocator);
+                }
+                if (item_obj.get("entries")) |ev| if (ev == .array) {
+                    for (ev.array.items) |ei| {
+                        if (ei != .object) continue;
+                        const e = try loadGuideEntry(allocator, ei.object, conf_dir);
+                        errdefer freeGuideEntry(allocator, @constCast(&e));
+                        try sec_entries.append(allocator, e);
+                    }
+                };
+                const sec_slice = try sec_entries.toOwnedSlice(allocator);
+                errdefer {
+                    for (sec_slice) |*e| freeGuideEntry(allocator, e);
+                    allocator.free(sec_slice);
+                }
+                try items.append(allocator, .{ .section = .{ .title = sec_title, .entries = sec_slice } });
+            } else if (item_obj.get("src") != null) {
+                const e = try loadGuideEntry(allocator, item_obj, conf_dir);
+                errdefer freeGuideEntry(allocator, @constCast(&e));
+                try items.append(allocator, .{ .entry = e });
+            }
+        }
+        guides = try items.toOwnedSlice(allocator);
+    };
+
+    return .{
+        .name    = name,
+        .sources = sources,
+        .theme   = theme,
+        .emoji   = ep,
+        .guides  = guides,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -710,8 +887,14 @@ pub fn renderSite(
     out_path: []const u8,
     project_name: []const u8,
     mods: []const symbols.Module,
+    /// Path to a guides JSON/conf file or a directory of .md files. Ignored when
+    /// `preloaded_guides` is non-null.
     docs_dir: ?[]const u8,
+    /// Pre-loaded guide nav items (e.g. from a `zkdocs.conf`). When non-null,
+    /// `docs_dir` is ignored and these guides are used directly (not freed).
+    preloaded_guides: ?[]GuideNavItem,
     emoji_provider: emoji.Provider,
+    theme: Theme,
     progress: *Progress,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
@@ -719,20 +902,24 @@ pub fn renderSite(
 
     try out_dir.makePath("api");
 
-    const guides: []GuideNavItem = if (docs_dir) |dd| try loadGuides(allocator, dd) else &.{};
-    defer if (docs_dir != null) freeGuides(allocator, guides);
+    const owns_guides = preloaded_guides == null and docs_dir != null;
+    const guides: []GuideNavItem = if (preloaded_guides) |pg|
+        pg
+    else if (docs_dir) |dd|
+        try loadGuides(allocator, dd)
+    else
+        &.{};
+    defer if (owns_guides) freeGuides(allocator, guides);
 
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
 
     // ── index.html ──────────────────────────────────────────────────────────
     progress.begin("writing index");
     {
-        var buf = Buf.init(allocator, emoji_provider);
+        var buf = Buf.init(allocator, emoji_provider, theme);
         defer buf.deinit();
 
         try writeHeader(&buf, project_name, project_name, mods, guides, null, null, ".");
-        // No per-page TOC on the index.
-        try writeNavClose(&buf);
 
         try buf.writeAll("<h1>");
         try htmlEscape(&buf, project_name);
@@ -811,15 +998,13 @@ pub fn renderSite(
     }
     for (mods) |mod| {
         Progress.setCurrent(mod.name);
-        var buf = Buf.init(allocator, emoji_provider);
+        var buf = Buf.init(allocator, emoji_provider, theme);
         defer buf.deinit();
 
         const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
         defer allocator.free(title);
 
         try writeHeader(&buf, title, project_name, mods, guides, mod.name, null, "..");
-        try writeApiToc(&buf, mod);
-        try writeNavClose(&buf);
 
         try buf.writeAll("<h1>");
         try htmlEscape(&buf, mod.name);
@@ -872,6 +1057,7 @@ pub fn renderSite(
             }
         }
 
+        try writeApiToc(&buf, mod);
         try writeFooter(&buf);
 
         const filename = try std.fmt.allocPrint(allocator, "api/{s}.html", .{mod.name});
@@ -898,11 +1084,11 @@ pub fn renderSite(
         for (guides) |item| switch (item) {
             .entry => |e| {
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme);
             },
             .section => |s| for (s.entries) |e| {
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme);
             },
         };
         Progress.endFiles();
@@ -917,8 +1103,9 @@ fn renderGuidePage(
     mods: []const symbols.Module,
     guides: []const GuideNavItem,
     emoji_provider: emoji.Provider,
+    theme: Theme,
 ) !void {
-    var buf = Buf.init(allocator, emoji_provider);
+    var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
 
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
@@ -931,8 +1118,6 @@ fn renderGuidePage(
         "..";
 
     try writeHeader(&buf, title, project_name, mods, guides, null, entry.slug, prefix);
-    try writeGuideToc(&buf, entry.content);
-    try writeNavClose(&buf);
 
     const raw = try markdown.toHtml(allocator, entry.content);
     defer allocator.free(raw);
@@ -943,6 +1128,7 @@ fn renderGuidePage(
     try buf.writeAll(html);
     try buf.writeAll("</div>\n");
 
+    try writeGuideToc(&buf, entry.content);
     try writeFooter(&buf);
 
     const filename = try std.fmt.allocPrint(allocator, "guide/{s}.html", .{entry.slug});
