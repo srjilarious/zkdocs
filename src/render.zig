@@ -224,17 +224,7 @@ fn writeHeader(
                     try buf.writeAll("</a></li>\n");
                 },
                 .section => |s| {
-                    var section_open = false;
-                    if (active_guide) |ag| {
-                        for (s.entries) |e| {
-                            if (std.mem.eql(u8, ag, e.slug)) { section_open = true; break; }
-                        }
-                    }
-                    if (section_open) {
-                        try buf.writeAll("<details class=\"nav-subsection\" open>\n<summary>");
-                    } else {
-                        try buf.writeAll("<details class=\"nav-subsection\">\n<summary>");
-                    }
+                    try buf.writeAll("<details class=\"nav-subsection\" open>\n<summary>");
                     try htmlEscape(buf, s.title);
                     try buf.writeAll("</summary>\n<ul>\n");
                     for (s.entries) |e| {
