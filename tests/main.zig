@@ -92,7 +92,7 @@ const DocTests = struct {
         };
         const doc = sym.function.?.doc orelse return error.NoDoc;
         try testz.expectTrue(std.mem.startsWith(u8, doc, "Adds two integers"));
-        try testz.expectTrue(std.mem.indexOf(u8, doc, "\n") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, doc, "Returns the sum") != null);
     }
 
     pub fn noDocForPrivate() !void {

@@ -15,10 +15,10 @@ pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) ![]const 
     defer allocator.free(stripped);
 
     const html = try zmd.parse(allocator, stripped, .{
-        .root  = rootFmt,
-        .code  = codeFmt,
+        .root = rootFmt,
+        .code = codeFmt,
         .block = blockFmt,
-        .h2    = h2Fmt,
+        .h2 = h2Fmt,
     });
     defer allocator.free(html);
 
@@ -36,8 +36,14 @@ pub fn slugify(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     var need_dash = false; // true if the next alphanumeric should be preceded by a dash
 
     for (text) |c| {
-        if (c == '<') { in_tag = true; continue; }
-        if (c == '>') { in_tag = false; continue; }
+        if (c == '<') {
+            in_tag = true;
+            continue;
+        }
+        if (c == '>') {
+            in_tag = false;
+            continue;
+        }
         if (in_tag) continue;
 
         if (std.ascii.isAlphanumeric(c)) {
@@ -78,11 +84,11 @@ fn extractTables(
     var i: usize = 0;
     while (i < lines.items.len) {
         const line = lines.items[i];
-        const trimmed = std.mem.trim(u8, line, " \t");
+        //const trimmed = std.mem.trim(u8, line, " \t");
 
         // Table starts when this line and the next both begin with `|`, and
         // the next line is a separator row.
-        if (trimmed.len > 0 and trimmed[0] == '|' and
+        if (line.len > 0 and line[0] == '|' and
             i + 1 < lines.items.len)
         {
             const next = std.mem.trim(u8, lines.items[i + 1], " \t");
@@ -180,9 +186,9 @@ fn appendInline(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []c
         }
         // HTML-escape single character.
         switch (text[i]) {
-            '<'  => try out.appendSlice(allocator, "&lt;"),
-            '>'  => try out.appendSlice(allocator, "&gt;"),
-            '&'  => try out.appendSlice(allocator, "&amp;"),
+            '<' => try out.appendSlice(allocator, "&lt;"),
+            '>' => try out.appendSlice(allocator, "&gt;"),
+            '&' => try out.appendSlice(allocator, "&amp;"),
             else => try out.append(allocator, text[i]),
         }
         i += 1;
@@ -191,9 +197,9 @@ fn appendInline(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []c
 
 fn htmlEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     for (s) |c| switch (c) {
-        '<'  => try out.appendSlice(allocator, "&lt;"),
-        '>'  => try out.appendSlice(allocator, "&gt;"),
-        '&'  => try out.appendSlice(allocator, "&amp;"),
+        '<' => try out.appendSlice(allocator, "&lt;"),
+        '>' => try out.appendSlice(allocator, "&gt;"),
+        '&' => try out.appendSlice(allocator, "&amp;"),
         else => try out.append(allocator, c),
     };
 }
@@ -236,9 +242,9 @@ fn restoreTables(
 }
 
 const SentinelMatch = struct {
-    pre_start:  usize,   // start of the whole match (incl. possible <p>)
-    index_str:  []const u8,
-    post_end:   usize,   // end of the whole match (incl. possible </p>)
+    pre_start: usize, // start of the whole match (incl. possible <p>)
+    index_str: []const u8,
+    post_end: usize, // end of the whole match (incl. possible </p>)
 };
 
 fn findSentinel(html: []const u8) ?SentinelMatch {
@@ -251,7 +257,7 @@ fn findSentinel(html: []const u8) ?SentinelMatch {
 
     // Expand to include any surrounding <p> / </p> and whitespace.
     var pre_start = idx;
-    var post_end  = end;
+    var post_end = end;
 
     // Check for <p> before (with optional whitespace between <p> and sentinel).
     const before = html[0..pre_start];
@@ -266,9 +272,9 @@ fn findSentinel(html: []const u8) ?SentinelMatch {
     }
 
     return .{
-        .pre_start  = pre_start,
-        .index_str  = index_str,
-        .post_end   = post_end,
+        .pre_start = pre_start,
+        .index_str = index_str,
+        .post_end = post_end,
     };
 }
 
@@ -286,9 +292,15 @@ fn codeFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
 
 // Fenced code blocks: Zig blocks get tree-sitter syntax highlighting.
 fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
+    // zmd strips leading whitespace from code block content via std.mem.trim,
+    // which eats the first line's indentation along with the opening newline.
+    // Restore it by detecting the indent used by the first non-blank subsequent line.
+    const content = try restoreCodeIndent(allocator, node.content);
+    defer allocator.free(content);
+
     if (node.meta) |lang| {
         if (std.mem.eql(u8, lang, "zig")) {
-            if (highlight.highlightZig(allocator, node.content)) |hl| {
+            if (highlight.highlightZig(allocator, content)) |hl| {
                 defer allocator.free(hl);
                 return std.fmt.allocPrint(
                     allocator,
@@ -302,10 +314,40 @@ fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
         return std.fmt.allocPrint(
             allocator,
             "<pre><code class=\"language-{s}\">{s}</code></pre>\n",
-            .{ lang, node.content },
+            .{ lang, content },
         );
     }
-    return std.fmt.allocPrint(allocator, "<pre><code>{s}</code></pre>\n", .{node.content});
+    return std.fmt.allocPrint(allocator, "<pre><code>{s}</code></pre>\n", .{content});
+}
+
+/// zmd's `strip()` (std.mem.trim) removes the opening `\n` after the fence line
+/// together with the first content line's leading whitespace. Detect the indent
+/// used by the first non-blank subsequent line and prepend it to the first line.
+fn restoreCodeIndent(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
+    const nl = std.mem.indexOfScalar(u8, content, '\n') orelse
+        return allocator.dupe(u8, content);
+
+    const rest = content[nl + 1 ..];
+
+    // Find leading whitespace of the first non-blank subsequent line.
+    var line_iter = std.mem.splitScalar(u8, rest, '\n');
+    while (line_iter.next()) |line| {
+        if (line.len == 0) continue;
+        var indent_end: usize = 0;
+        while (indent_end < line.len and (line[indent_end] == ' ' or line[indent_end] == '\t'))
+            indent_end += 1;
+        const indent = line[0..indent_end];
+        if (indent.len == 0) return allocator.dupe(u8, content);
+
+        var out = std.ArrayList(u8){};
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, indent);       // restored indent for line 1
+        try out.appendSlice(allocator, content[0..nl + 1]); // original first line + newline
+        try out.appendSlice(allocator, rest);
+        return out.toOwnedSlice(allocator);
+    }
+
+    return allocator.dupe(u8, content);
 }
 
 // H2 headings get an anchor id for in-page navigation.

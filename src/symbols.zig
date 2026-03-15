@@ -123,6 +123,7 @@ fn collectDocComment(
     errdefer buf.deinit(allocator);
 
     var idx: std.zig.Ast.TokenIndex = first;
+    var inCodeBlock = false;
     while (idx <= last) : (idx += 1) {
         const raw = tree.tokenSlice(idx);
         const text = if (std.mem.startsWith(u8, raw, "/// "))
@@ -131,7 +132,24 @@ fn collectDocComment(
             raw[3..]
         else
             raw;
-        if (buf.items.len > 0) try buf.append(allocator, '\n');
+
+        // Track code-fence boundaries.
+        if (std.mem.indexOf(u8, text, "```") != null) inCodeBlock = !inCodeBlock;
+
+        if (buf.items.len > 0) {
+            if (inCodeBlock) {
+                // Inside a code block every line keeps its newline.
+                try buf.append(allocator, '\n');
+            } else if (text.len == 0) {
+                // Blank doc-comment line → paragraph break.
+                try buf.append(allocator, '\n');
+            } else {
+                // Regular paragraph text: join with a space so words don't
+                // run together; zmd renders a single space between them.
+                try buf.append(allocator, ' ');
+            }
+        }
+
         try buf.appendSlice(allocator, text);
     }
 
@@ -365,8 +383,12 @@ fn extractFnSymbol(
                 if (findReturnedContainerNode(tree, node)) |cn| {
                     const gr_name = try allocator.dupe(u8, name);
                     const sym = try extractContainerSymbol(
-                        allocator, tree, cn, gr_name,
-                        tree.firstToken(cn), is_pub,
+                        allocator,
+                        tree,
+                        cn,
+                        gr_name,
+                        tree.firstToken(cn),
+                        is_pub,
                     );
                     generic_return = sym.container;
                 }
