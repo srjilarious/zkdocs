@@ -585,6 +585,46 @@ fn loadGuideEntry(
     return .{ .slug = slug, .title = title, .content = content };
 }
 
+// ---------------------------------------------------------------------------
+// JSON with comments
+// ---------------------------------------------------------------------------
+
+/// Strip `//`-style line comments from `src` and return a freshly allocated
+/// copy suitable for passing to `std.json.parseFromSlice`.
+///
+/// A comment is any line whose first non-whitespace characters are `//`.
+/// The entire line (including its trailing newline) is replaced by a blank
+/// line so that byte offsets in error messages remain meaningful.
+pub fn stripJsonComments(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8){};
+    errdefer out.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, src, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, "//")) {
+            // Emit a blank line to preserve line numbers.
+            try out.append(allocator, '\n');
+        } else {
+            try out.appendSlice(allocator, line);
+            try out.append(allocator, '\n');
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+/// Parse `src` as JSON, transparently ignoring `//`-prefixed comment lines.
+/// Returns a `std.json.Parsed(std.json.Value)`; the caller must call `.deinit()`.
+pub fn parseJsonWithComments(
+    allocator: std.mem.Allocator,
+    src: []const u8,
+) !std.json.Parsed(std.json.Value) {
+    const stripped = try stripJsonComments(allocator, src);
+    defer allocator.free(stripped);
+    return std.json.parseFromSlice(std.json.Value, allocator, stripped, .{});
+}
+
 fn loadGuidesFromConfig(
     allocator: std.mem.Allocator,
     config_path: []const u8,
@@ -597,7 +637,7 @@ fn loadGuidesFromConfig(
 
     const config_dir = std.fs.path.dirname(config_path) orelse ".";
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    const parsed = try parseJsonWithComments(allocator, raw);
     defer parsed.deinit();
 
     // Support both the old array-root format and the new object-root format
@@ -762,7 +802,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
 
     const conf_dir = std.fs.path.dirname(conf_path) orelse ".";
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    const parsed = try parseJsonWithComments(allocator, raw);
     defer parsed.deinit();
 
     if (parsed.value != .object) return error.InvalidConfig;
