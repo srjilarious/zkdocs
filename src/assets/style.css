@@ -73,8 +73,8 @@ main {
   margin-left: var(--sidebar-w);
   margin-right: var(--toc-w);
   padding: 2.5rem 3rem;
-  max-width: 880px;
-  flex: 1;
+  width: 100%;
+  min-width: 0;
 }
 
 h1 { font-size: 1.75rem; color: #fff; margin-bottom: .25rem; }

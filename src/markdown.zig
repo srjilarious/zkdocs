@@ -322,32 +322,41 @@ fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
 
 /// zmd's `strip()` (std.mem.trim) removes the opening `\n` after the fence line
 /// together with the first content line's leading whitespace. Detect the indent
-/// used by the first non-blank subsequent line and prepend it to the first line.
+/// used by subsequent lines and prepend it to the first line — but only when ALL
+/// non-blank subsequent lines share a common base indent (i.e., no line is at
+/// column 0). If any line has zero indent the first line was genuinely unindented
+/// (e.g., a function definition with its closing `}` at col 0) and we leave it alone.
 fn restoreCodeIndent(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
     const nl = std.mem.indexOfScalar(u8, content, '\n') orelse
         return allocator.dupe(u8, content);
 
     const rest = content[nl + 1 ..];
 
-    // Find leading whitespace of the first non-blank subsequent line.
+    // Compute the minimum indent across all non-blank subsequent lines.
+    // Any col-0 line means the first line was likely also at col 0 — bail out.
+    var min_indent: usize = std.math.maxInt(usize);
     var line_iter = std.mem.splitScalar(u8, rest, '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
-        var indent_end: usize = 0;
-        while (indent_end < line.len and (line[indent_end] == ' ' or line[indent_end] == '\t'))
-            indent_end += 1;
-        const indent = line[0..indent_end];
-        if (indent.len == 0) return allocator.dupe(u8, content);
-
-        var out = std.ArrayList(u8){};
-        errdefer out.deinit(allocator);
-        try out.appendSlice(allocator, indent);       // restored indent for line 1
-        try out.appendSlice(allocator, content[0..nl + 1]); // original first line + newline
-        try out.appendSlice(allocator, rest);
-        return out.toOwnedSlice(allocator);
+        var end: usize = 0;
+        while (end < line.len and (line[end] == ' ' or line[end] == '\t')) end += 1;
+        if (end == 0) return allocator.dupe(u8, content); // col-0 line → no restore
+        if (end < min_indent) min_indent = end;
     }
+    if (min_indent == std.math.maxInt(usize)) return allocator.dupe(u8, content);
 
-    return allocator.dupe(u8, content);
+    // Take the indent characters (up to min_indent) from the first non-blank line.
+    line_iter = std.mem.splitScalar(u8, rest, '\n');
+    const indent = while (line_iter.next()) |line| {
+        if (line.len > 0) break line[0..min_indent];
+    } else return allocator.dupe(u8, content);
+
+    var out = std.ArrayList(u8){};
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, indent);
+    try out.appendSlice(allocator, content[0..nl + 1]);
+    try out.appendSlice(allocator, rest);
+    return out.toOwnedSlice(allocator);
 }
 
 // H2 headings get an anchor id for in-page navigation.

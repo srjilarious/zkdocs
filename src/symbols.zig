@@ -701,6 +701,7 @@ fn collectRelativeImports(
 fn extractModuleGraphRecurse(
     allocator: std.mem.Allocator,
     path: []const u8,
+    root_dir: []const u8, // absolute path of the root module's directory
     modules: *std.ArrayList(Module),
     visited: *std.StringHashMap(void),
 ) !void {
@@ -726,7 +727,16 @@ fn extractModuleGraphRecurse(
     // Derive module name from the file stem.
     const module_name = std.fs.path.stem(abs_path);
 
-    var module = try extractModule(allocator, &tree, module_name, abs_path);
+    // Build a path relative to the root source directory for display.
+    // Strip the root_dir prefix (plus path separator) from abs_path.
+    const rel_path = if (std.mem.startsWith(u8, abs_path, root_dir) and
+        abs_path.len > root_dir.len and
+        abs_path[root_dir.len] == std.fs.path.sep)
+        abs_path[root_dir.len + 1 ..]
+    else
+        abs_path; // fallback: show absolute path if outside root tree
+
+    var module = try extractModule(allocator, &tree, module_name, rel_path);
     errdefer deinitModule(allocator, &module);
     try modules.append(allocator, module);
 
@@ -740,7 +750,7 @@ fn extractModuleGraphRecurse(
     try collectRelativeImports(allocator, tree, dir_path, &import_paths);
 
     for (import_paths.items) |import_path| {
-        try extractModuleGraphRecurse(allocator, import_path, modules, visited);
+        try extractModuleGraphRecurse(allocator, import_path, root_dir, modules, visited);
     }
 }
 
@@ -764,6 +774,11 @@ pub fn extractModuleGraph(
         visited.deinit();
     }
 
-    try extractModuleGraphRecurse(allocator, root_path, &modules, &visited);
+    // Resolve root to absolute so we can strip it from all child paths.
+    const abs_root = try std.fs.cwd().realpathAlloc(allocator, root_path);
+    defer allocator.free(abs_root);
+    const root_dir = std.fs.path.dirname(abs_root) orelse ".";
+
+    try extractModuleGraphRecurse(allocator, root_path, root_dir, &modules, &visited);
     return try modules.toOwnedSlice(allocator);
 }
