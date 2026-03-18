@@ -114,6 +114,45 @@ fn guidesHaveEntries(guides: []const GuideNavItem) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Type index (cross-module type linking)
+// ---------------------------------------------------------------------------
+
+/// Points to where a named type is defined.
+pub const TypeRef = struct {
+    module_name: []const u8,  // e.g. "math" → api/math.html
+    anchor_name: []const u8,  // the `sym-<name>` id on that page
+};
+
+/// Maps a bare type name (e.g. "Vec2") to its definition location.
+pub const TypeIndex = std.StringHashMap(TypeRef);
+
+/// Build a TypeIndex from all extracted modules.
+/// Keys and values borrow slices from `mods`; no allocation of strings needed.
+pub fn buildTypeIndex(allocator: std.mem.Allocator, mods: []const symbols.Module) !TypeIndex {
+    var idx = TypeIndex.init(allocator);
+    for (mods) |mod| {
+        for (mod.symbols.items) |sym| {
+            switch (sym.kind) {
+                .container => if (sym.container) |c| {
+                    if (c.is_pub) try idx.put(c.name, .{
+                        .module_name = mod.name,
+                        .anchor_name = c.name,
+                    });
+                },
+                .function => if (sym.function) |f| {
+                    if (f.is_pub and f.generic_return != null) try idx.put(f.name, .{
+                        .module_name = mod.name,
+                        .anchor_name = f.name,
+                    });
+                },
+                else => {},
+            }
+        }
+    }
+    return idx;
+}
+
+// ---------------------------------------------------------------------------
 // Internal write buffer
 // ---------------------------------------------------------------------------
 
@@ -122,6 +161,9 @@ const Buf = struct {
     alloc: std.mem.Allocator,
     emoji_provider: emoji.Provider,
     theme: Theme,
+    /// Set for API pages so type names can be linked.
+    type_index: ?*const TypeIndex = null,
+    current_module: []const u8 = "",
 
     fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
         return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider, .theme = theme };
@@ -154,6 +196,57 @@ fn htmlEscape(buf: *Buf, text: []const u8) !void {
             '&' => try buf.writeAll("&amp;"),
             '"' => try buf.writeAll("&quot;"),
             else => try buf.list.append(buf.alloc, c),
+        }
+    }
+}
+
+/// Emit `type_src` with known type names wrapped in `<a>` links.
+/// Falls back to plain HTML escaping when no type index is set.
+/// `skip_name`: the current container's name; its occurrences are not linked
+/// (avoids a self-referential link when rendering a type's own methods).
+fn writeTypeSrc(buf: *Buf, type_src: []const u8, skip_name: ?[]const u8) !void {
+    const idx = buf.type_index orelse return htmlEscape(buf, type_src);
+    var i: usize = 0;
+    while (i < type_src.len) {
+        const c = type_src[i];
+        if (std.ascii.isAlphabetic(c) or c == '_') {
+            // Collect a full identifier.
+            var j = i + 1;
+            while (j < type_src.len and
+                (std.ascii.isAlphanumeric(type_src[j]) or type_src[j] == '_')) j += 1;
+            const ident = type_src[i..j];
+
+            const is_skip = if (skip_name) |sn| std.mem.eql(u8, ident, sn) else false;
+            if (!is_skip) {
+                if (idx.get(ident)) |ref| {
+                    // Same module → fragment-only href; other module → sibling file.
+                    if (std.mem.eql(u8, ref.module_name, buf.current_module)) {
+                        try buf.print(
+                            "<a href=\"#sym-{s}\" class=\"type-link\">{s}</a>",
+                            .{ ref.anchor_name, ident },
+                        );
+                    } else {
+                        try buf.print(
+                            "<a href=\"{s}.html#sym-{s}\" class=\"type-link\">{s}</a>",
+                            .{ ref.module_name, ref.anchor_name, ident },
+                        );
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            // Unknown type or skipped — emit plain (identifiers have no HTML special chars).
+            try buf.writeAll(ident);
+            i = j;
+        } else {
+            switch (c) {
+                '<' => try buf.writeAll("&lt;"),
+                '>' => try buf.writeAll("&gt;"),
+                '&' => try buf.writeAll("&amp;"),
+                '"' => try buf.writeAll("&quot;"),
+                else => try buf.list.append(buf.alloc, c),
+            }
+            i += 1;
         }
     }
 }
@@ -425,13 +518,13 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
         if (i > 0) try buf.writeAll(", ");
         if (p.name) |n| try buf.print("<span class=\"param-name\">{s}</span>: ", .{n});
         try buf.writeAll("<span class=\"type-name\">");
-        try htmlEscape(buf, p.type_src);
+        try writeTypeSrc(buf, p.type_src, parent_container);
         try buf.writeAll("</span>");
     }
     try buf.writeAll(")");
     if (f.return_type_src) |r| {
         try buf.writeAll(" <span class=\"type-name\">");
-        try htmlEscape(buf, r);
+        try writeTypeSrc(buf, r, parent_container);
         try buf.writeAll("</span>");
     }
     try buf.writeAll("</code></div>\n");
@@ -451,7 +544,7 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
                 try buf.writeAll("<tr><td>");
                 try htmlEscape(buf, field.name);
                 try buf.writeAll("</td><td>");
-                if (field.type_src) |t| try htmlEscape(buf, t);
+                if (field.type_src) |t| try writeTypeSrc(buf, t, f.name);
                 try buf.writeAll("</td><td class=\"field-doc\">");
                 if (field.doc) |d| try htmlEscape(buf, d);
                 try buf.writeAll("</td></tr>\n");
@@ -498,7 +591,7 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
             try buf.writeAll("<tr><td>");
             try htmlEscape(buf, f.name);
             try buf.writeAll("</td><td>");
-            if (f.type_src) |t| try htmlEscape(buf, t);
+            if (f.type_src) |t| try writeTypeSrc(buf, t, c.name);
             try buf.writeAll("</td><td class=\"field-doc\">");
             if (f.doc) |d| try htmlEscape(buf, d);
             try buf.writeAll("</td></tr>\n");
@@ -531,7 +624,7 @@ fn renderVar(buf: *Buf, v: symbols.Variable) !void {
     try buf.print("<span class=\"fn-name\">{s}</span>", .{v.name});
     if (v.type_src) |t| {
         try buf.writeAll(": <span class=\"type-name\">");
-        try htmlEscape(buf, t);
+        try writeTypeSrc(buf, t, null);
         try buf.writeAll("</span>");
     }
     try buf.writeAll("</code></div>\n");
@@ -943,6 +1036,10 @@ pub fn renderSite(
 
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
 
+    // Build type index once for cross-module type linking.
+    var type_index = try buildTypeIndex(allocator, mods);
+    defer type_index.deinit();
+
     // ── index.html ──────────────────────────────────────────────────────────
     progress.begin("writing index");
     {
@@ -1030,6 +1127,8 @@ pub fn renderSite(
         Progress.setCurrent(mod.name);
         var buf = Buf.init(allocator, emoji_provider, theme);
         defer buf.deinit();
+        buf.type_index = &type_index;
+        buf.current_module = mod.name;
 
         const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
         defer allocator.free(title);

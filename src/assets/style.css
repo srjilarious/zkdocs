@@ -154,6 +154,8 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
 .fn-name   { color: var(--fn);   }
 .type-name { color: var(--type); }
 .param-name{ color: var(--str);  }
+a.type-link { color: var(--type); text-decoration: none; }
+a.type-link:hover { text-decoration: underline; }
 
 /* ── Fields table ── */
 .fields-table {
