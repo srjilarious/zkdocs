@@ -64,4 +64,4 @@ zkdocs extracts **public** (`pub`) symbols from your Zig source:
   as a type and shown with fields and methods
 - **Constants** — `pub const name: Type = value`
 
-Private symbols (no `pub`) are silently ignored.
+Private symbols (not marked `pub`) are silently ignored.
