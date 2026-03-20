@@ -1224,6 +1224,165 @@ pub fn renderSite(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Internal link resolution
+// ---------------------------------------------------------------------------
+
+/// Locate a public symbol by name across all modules.
+/// Accepts:
+///   `"Name"`            — searched across all modules
+///   `"module.Name"`     — scoped to the named module
+///   `"Container.method"`— method inside a container (fallback when first part is not a module)
+const SymbolRef = struct {
+    module_name: []const u8,
+    /// Non-null for method lookups (Container.method syntax).
+    container: ?[]const u8 = null,
+    name: []const u8,
+};
+
+fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
+    if (std.mem.indexOfScalar(u8, target, '.')) |dot| {
+        const lhs = target[0..dot];
+        const rhs = target[dot + 1 ..];
+
+        // Check if lhs is a module name first.
+        for (mods) |mod| {
+            if (std.mem.eql(u8, mod.name, lhs)) {
+                // module.Symbol — look up the symbol within this module only.
+                for (mod.symbols.items) |sym| {
+                    const sym_name: ?[]const u8 = switch (sym.kind) {
+                        .function  => if (sym.function)  |f| (if (f.is_pub) f.name  else null) else null,
+                        .variable  => if (sym.variable)  |v| (if (v.is_pub) v.name  else null) else null,
+                        .container => if (sym.container) |c| (if (c.is_pub) c.name  else null) else null,
+                        else => null,
+                    };
+                    if (sym_name) |n| {
+                        if (std.mem.eql(u8, n, rhs))
+                            return .{ .module_name = mod.name, .name = n };
+                    }
+                }
+                return null; // module found but symbol not in it
+            }
+        }
+
+        // lhs is not a module → treat as Container.method.
+        for (mods) |mod| {
+            for (mod.symbols.items) |sym| {
+                if (sym.kind == .container) {
+                    if (sym.container) |c| {
+                        if (c.is_pub and std.mem.eql(u8, c.name, lhs)) {
+                            return .{ .module_name = mod.name, .container = c.name, .name = rhs };
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    // Plain symbol name — match across all modules.
+    for (mods) |mod| {
+        for (mod.symbols.items) |sym| {
+            const sym_name: ?[]const u8 = switch (sym.kind) {
+                .function  => if (sym.function)  |f| (if (f.is_pub) f.name  else null) else null,
+                .variable  => if (sym.variable)  |v| (if (v.is_pub) v.name  else null) else null,
+                .container => if (sym.container) |c| (if (c.is_pub) c.name  else null) else null,
+                else => null,
+            };
+            if (sym_name) |n| {
+                if (std.mem.eql(u8, n, target))
+                    return .{ .module_name = mod.name, .name = n };
+            }
+        }
+    }
+    return null;
+}
+
+/// Rewrite internal link schemes produced by the markdown parser into proper relative URLs.
+///
+/// Supported syntax in guide markdown:
+///   `[text](sym:Name)`             → any public symbol (searched across all modules)
+///   `[text](sym:module.Name)`      → symbol qualified by module name
+///   `[text](sym:Container.method)` → method anchor (when first part is not a module)
+///   `[text](mod:name)`             → module API page (`api/name.html`)
+///   `[text](guide:slug)`           → another guide page (`guide/slug.html`)
+fn resolveInternalLinks(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    mods: []const symbols.Module,
+    prefix: []const u8,
+) ![]const u8 {
+    var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
+
+    var rest = html;
+    while (true) {
+        const sym_pos   = std.mem.indexOf(u8, rest, "href=\"sym:");
+        const mod_pos   = std.mem.indexOf(u8, rest, "href=\"mod:");
+        const guide_pos = std.mem.indexOf(u8, rest, "href=\"guide:");
+
+        // Pick the earliest marker.
+        var fp: usize = std.math.maxInt(usize);
+        if (sym_pos)   |p| fp = @min(fp, p);
+        if (mod_pos)   |p| fp = @min(fp, p);
+        if (guide_pos) |p| fp = @min(fp, p);
+        if (fp == std.math.maxInt(usize)) {
+            try out.appendSlice(allocator, rest);
+            break;
+        }
+
+        try out.appendSlice(allocator, rest[0..fp]);
+
+        const marker: []const u8 = if (sym_pos != null and fp == sym_pos.?)
+            "href=\"sym:"
+        else if (mod_pos != null and fp == mod_pos.?)
+            "href=\"mod:"
+        else
+            "href=\"guide:";
+
+        const after = rest[fp + marker.len ..];
+        const close = std.mem.indexOfScalar(u8, after, '"') orelse {
+            try out.appendSlice(allocator, marker);
+            rest = after;
+            continue;
+        };
+        const target = after[0..close];
+
+        if (std.mem.eql(u8, marker, "href=\"sym:")) {
+            if (findSymbolRef(mods, target)) |ref| {
+                if (ref.container) |cont| {
+                    try out.writer(allocator).print(
+                        "href=\"{s}/api/{s}.html#sym-{s}-{s}",
+                        .{ prefix, ref.module_name, cont, ref.name },
+                    );
+                } else {
+                    try out.writer(allocator).print(
+                        "href=\"{s}/api/{s}.html#sym-{s}",
+                        .{ prefix, ref.module_name, ref.name },
+                    );
+                }
+            } else {
+                try out.writer(allocator).print("href=\"#sym-{s}", .{target});
+            }
+        } else if (std.mem.eql(u8, marker, "href=\"mod:")) {
+            try out.writer(allocator).print(
+                "href=\"{s}/api/{s}.html",
+                .{ prefix, target },
+            );
+        } else {
+            // guide:
+            try out.writer(allocator).print(
+                "href=\"{s}/guide/{s}.html",
+                .{ prefix, target },
+            );
+        }
+
+        rest = after[close..];
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
 fn renderGuidePage(
     allocator: std.mem.Allocator,
     out_dir: *std.fs.Dir,
@@ -1250,7 +1409,9 @@ fn renderGuidePage(
 
     const raw = try markdown.toHtml(allocator, entry.content);
     defer allocator.free(raw);
-    const html = try emoji.replaceInHtml(allocator, raw, emoji_provider);
+    const with_emoji = try emoji.replaceInHtml(allocator, raw, emoji_provider);
+    defer allocator.free(with_emoji);
+    const html = try resolveInternalLinks(allocator, with_emoji, mods, prefix);
     defer allocator.free(html);
 
     try buf.writeAll("<div class=\"guide-content\">\n");
