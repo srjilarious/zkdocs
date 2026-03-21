@@ -3,7 +3,9 @@ const symbols = @import("symbols");
 pub const markdown = @import("markdown");
 const emoji = @import("emoji");
 
-const CSS = @embedFile("assets/style.css");
+const CSS          = @embedFile("assets/style.css");
+const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
+const SEARCH_JS     = @embedFile("assets/search.js");
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -299,13 +301,38 @@ fn writeHeader(
     try buf.print(
         \\</title>
         \\<link rel="stylesheet" href="{s}/assets/style.css">
+        \\<script>window.ZKDOCS_BASE='{s}/';</script>
+        \\<script src="{s}/assets/minisearch.min.js" defer></script>
+        \\<script src="{s}/assets/search.js" defer></script>
         \\</head>
         \\<body>
+    , .{ prefix, prefix, prefix, prefix });
+    // Mobile top bar
+    try buf.print(
+        \\<div class="mobile-bar">
+        \\<button class="mob-btn" id="nav-toggle" aria-label="Open navigation"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+        \\<a class="mob-title" href="{s}/index.html">
+    , .{prefix});
+    try htmlEscape(buf, project_name);
+    try buf.writeAll(
+        \\</a>
+        \\<button class="mob-btn" id="toc-toggle" aria-label="On this page"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1.5" fill="currentColor"/><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="3" cy="18" r="1.5" fill="currentColor"/></svg></button>
+        \\</div>
+        \\<div class="overlay" id="overlay"></div>
         \\<nav class="sidebar">
-        \\<a class="logo" href="{s}/index.html">
-    , .{ prefix, prefix });
+        \\
+    );
+    try buf.print("<a class=\"logo\" href=\"{s}/index.html\">", .{prefix});
     try htmlEscape(buf, project_name);
     try buf.writeAll("</a>\n");
+    // Search bar
+    try buf.writeAll(
+        \\<div class="search-box">
+        \\<input type="search" id="search-input" placeholder="Search docs&#x2026;" autocomplete="off" spellcheck="false">
+        \\<div class="search-results" id="search-results"></div>
+        \\</div>
+        \\
+    );
 
     if (guidesHaveEntries(guides)) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Guides</summary>\n<ul>\n");
@@ -913,6 +940,136 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
 }
 
 // ---------------------------------------------------------------------------
+// Search index
+// ---------------------------------------------------------------------------
+
+fn jsonEscapeStr(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    try buf.append(allocator, '"');
+    for (s) |c| {
+        switch (c) {
+            '"'  => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            // remaining control chars (excludes \t=0x09, \n=0x0a, \r=0x0d)
+            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
+                const hex = "0123456789abcdef";
+                try buf.appendSlice(allocator, "\\u00");
+                try buf.append(allocator, hex[c >> 4]);
+                try buf.append(allocator, hex[c & 0xf]);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    try buf.append(allocator, '"');
+}
+
+fn appendSearchDoc(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    id: usize,
+    title: []const u8,
+    content: []const u8,
+    url: []const u8,
+    doc_type: []const u8,
+) !void {
+    const max_content = 3000;
+    const trunc = if (content.len > max_content) content[0..max_content] else content;
+    try buf.writer(allocator).print("{{\"id\":{d},\"title\":", .{id});
+    try jsonEscapeStr(buf, allocator, title);
+    try buf.appendSlice(allocator, ",\"content\":");
+    try jsonEscapeStr(buf, allocator, trunc);
+    try buf.appendSlice(allocator, ",\"url\":");
+    try jsonEscapeStr(buf, allocator, url);
+    try buf.appendSlice(allocator, ",\"type\":");
+    try jsonEscapeStr(buf, allocator, doc_type);
+    try buf.append(allocator, '}');
+}
+
+fn writeSearchIndex(
+    allocator: std.mem.Allocator,
+    out_dir: *std.fs.Dir,
+    mods: []const symbols.Module,
+    guides: []const GuideNavItem,
+    home_slug: ?[]const u8,
+) !void {
+    var buf: std.ArrayList(u8) = .{};
+    defer buf.deinit(allocator);
+
+    try buf.append(allocator, '[');
+    var id: usize = 0;
+
+    // Guide entries
+    for (guides) |item| {
+        switch (item) {
+            .entry => |e| {
+                const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                const url = if (is_home)
+                    try allocator.dupe(u8, "index.html")
+                else
+                    try std.fmt.allocPrint(allocator, "guide/{s}.html", .{e.slug});
+                defer allocator.free(url);
+                if (id > 0) try buf.append(allocator, ',');
+                try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, "guide");
+                id += 1;
+            },
+            .section => |s| {
+                for (s.entries) |e| {
+                    const url = try std.fmt.allocPrint(allocator, "guide/{s}.html", .{e.slug});
+                    defer allocator.free(url);
+                    if (id > 0) try buf.append(allocator, ',');
+                    try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, "guide");
+                    id += 1;
+                }
+            },
+        }
+    }
+
+    // API symbols
+    for (mods) |mod| {
+        for (mod.symbols.items) |sym| {
+            switch (sym.kind) {
+                .function => if (sym.function) |f| {
+                    if (f.is_pub) {
+                        const url = try std.fmt.allocPrint(allocator, "api/{s}.html#sym-{s}", .{ mod.name, f.name });
+                        defer allocator.free(url);
+                        if (id > 0) try buf.append(allocator, ',');
+                        try appendSearchDoc(&buf, allocator, id, f.name, f.doc orelse "", url, "api");
+                        id += 1;
+                    }
+                },
+                .container => if (sym.container) |c| {
+                    if (c.is_pub) {
+                        const url = try std.fmt.allocPrint(allocator, "api/{s}.html#sym-{s}", .{ mod.name, c.name });
+                        defer allocator.free(url);
+                        if (id > 0) try buf.append(allocator, ',');
+                        try appendSearchDoc(&buf, allocator, id, c.name, c.doc orelse "", url, "api");
+                        id += 1;
+                    }
+                },
+                .variable => if (sym.variable) |v| {
+                    if (v.is_pub) {
+                        const url = try std.fmt.allocPrint(allocator, "api/{s}.html#sym-{s}", .{ mod.name, v.name });
+                        defer allocator.free(url);
+                        if (id > 0) try buf.append(allocator, ',');
+                        try appendSearchDoc(&buf, allocator, id, v.name, v.doc orelse "", url, "api");
+                        id += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    try buf.append(allocator, ']');
+
+    const file = try out_dir.createFile("search-index.json", .{});
+    defer file.close();
+    try file.writeAll(buf.items);
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -945,13 +1102,24 @@ pub fn renderSite(
 
     try out_dir.makePath("api");
 
-    // Write the stylesheet as a shared file rather than inlining it in every page.
+    // Write the stylesheet and JS assets.
     try out_dir.makePath("assets");
     {
         const css_file = try out_dir.createFile("assets/style.css", .{});
         defer css_file.close();
         try css_file.writeAll(CSS);
     }
+    {
+        const f = try out_dir.createFile("assets/minisearch.min.js", .{});
+        defer f.close();
+        try f.writeAll(MINISEARCH_JS);
+    }
+    {
+        const f = try out_dir.createFile("assets/search.js", .{});
+        defer f.close();
+        try f.writeAll(SEARCH_JS);
+    }
+    try writeSearchIndex(allocator, &out_dir, mods, guides, home_slug);
 
 
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
