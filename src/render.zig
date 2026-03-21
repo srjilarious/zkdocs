@@ -1,6 +1,6 @@
 const std = @import("std");
 const symbols = @import("symbols");
-const markdown = @import("markdown");
+pub const markdown = @import("markdown");
 const emoji = @import("emoji");
 
 const CSS = @embedFile("assets/style.css");
@@ -16,20 +16,20 @@ pub const Theme = enum {
     vscode_dark,
 
     pub fn fromStr(s: []const u8) ?Theme {
-        if (std.mem.eql(u8, s, "default"))      return .default;
-        if (std.mem.eql(u8, s, "monokai"))      return .monokai;
+        if (std.mem.eql(u8, s, "default")) return .default;
+        if (std.mem.eql(u8, s, "monokai")) return .monokai;
         if (std.mem.eql(u8, s, "vscode-light")) return .vscode_light;
-        if (std.mem.eql(u8, s, "vscode-dark"))  return .vscode_dark;
+        if (std.mem.eql(u8, s, "vscode-dark")) return .vscode_dark;
         return null;
     }
 
     /// Returns the `data-theme` attribute value, or null for the default theme.
     pub fn toAttr(self: Theme) ?[]const u8 {
         return switch (self) {
-            .default      => null,
-            .monokai      => "monokai",
+            .default => null,
+            .monokai => "monokai",
             .vscode_light => "vscode-light",
-            .vscode_dark  => "vscode-dark",
+            .vscode_dark => "vscode-dark",
         };
     }
 };
@@ -39,10 +39,12 @@ pub const Theme = enum {
 // ---------------------------------------------------------------------------
 
 pub const Progress = struct {
-    step:  usize = 0,
+    step: usize = 0,
     total: usize,
 
-    pub fn init(total: usize) Progress { return .{ .total = total }; }
+    pub fn init(total: usize) Progress {
+        return .{ .total = total };
+    }
 
     /// Print a numbered step header and advance the step counter.
     pub fn begin(self: *Progress, label: []const u8) void {
@@ -67,7 +69,7 @@ pub const Progress = struct {
 // ---------------------------------------------------------------------------
 
 pub const GuideEntry = struct {
-    slug: []const u8,     // URL path, e.g. "getting-started" or "reference/cli"
+    slug: []const u8, // URL path, e.g. "getting-started" or "reference/cli"
     title: []const u8,
     content: []const u8,
 };
@@ -119,8 +121,8 @@ fn guidesHaveEntries(guides: []const GuideNavItem) bool {
 
 /// Points to where a named type is defined.
 pub const TypeRef = struct {
-    module_name: []const u8,  // e.g. "math" → api/math.html
-    anchor_name: []const u8,  // the `sym-<name>` id on that page
+    module_name: []const u8, // e.g. "math" → api/math.html
+    anchor_name: []const u8, // the `sym-<name>` id on that page
 };
 
 /// Maps a bare type name (e.g. "Vec2") to its definition location.
@@ -164,6 +166,8 @@ const Buf = struct {
     /// Set for API pages so type names can be linked.
     type_index: ?*const TypeIndex = null,
     current_module: []const u8 = "",
+    /// Slug of the guide rendered as index.html, if any.
+    home_slug: ?[]const u8 = null,
 
     fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
         return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider, .theme = theme };
@@ -310,7 +314,12 @@ fn writeHeader(
                 .entry => |e| {
                     const active = if (active_guide) |ag| std.mem.eql(u8, ag, e.slug) else false;
                     const cls: []const u8 = if (active) " class=\"active\"" else "";
-                    try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                    const is_home = if (buf.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                    if (is_home) {
+                        try buf.print("<li><a href=\"{s}/index.html\"{s}>", .{ prefix, cls });
+                    } else {
+                        try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                    }
                     try htmlEscape(buf, e.title);
                     try buf.writeAll("</a></li>\n");
                 },
@@ -321,7 +330,12 @@ fn writeHeader(
                     for (s.entries) |e| {
                         const active = if (active_guide) |ag| std.mem.eql(u8, ag, e.slug) else false;
                         const cls: []const u8 = if (active) " class=\"active\"" else "";
-                        try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                        const is_home = if (buf.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                        if (is_home) {
+                            try buf.print("<li><a href=\"{s}/index.html\"{s}>", .{ prefix, cls });
+                        } else {
+                            try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                        }
                         try htmlEscape(buf, e.title);
                         try buf.writeAll("</a></li>\n");
                     }
@@ -358,17 +372,21 @@ fn writeFooter(buf: *Buf) !void {
 /// Emit a collapsible "On this page" TOC for an API module page.
 /// Shows Types → container names (with indented methods), Functions, Constants.
 fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
-    var has_types  = false;
-    var has_fns    = false;
+    var has_types = false;
+    var has_fns = false;
     var has_consts = false;
     for (mod.symbols.items) |sym| {
         switch (sym.kind) {
-            .container => if (sym.container) |c| { if (c.is_pub) has_types = true; },
-            .function  => if (sym.function)  |f| {
-                if (f.is_pub and f.generic_return != null) has_types = true;
-                if (f.is_pub and f.generic_return == null) has_fns   = true;
+            .container => if (sym.container) |c| {
+                if (c.is_pub) has_types = true;
             },
-            .variable  => if (sym.variable)  |v| { if (v.is_pub) has_consts = true; },
+            .function => if (sym.function) |f| {
+                if (f.is_pub and f.generic_return != null) has_types = true;
+                if (f.is_pub and f.generic_return == null) has_fns = true;
+            },
+            .variable => if (sym.variable) |v| {
+                if (v.is_pub) has_consts = true;
+            },
             else => {},
         }
     }
@@ -390,7 +408,12 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
             // Indented public methods
             var has_methods = false;
             for (c.decls.items) |d| {
-                if (d.kind == .function) if (d.function) |mf| { if (mf.is_pub) { has_methods = true; break; } };
+                if (d.kind == .function) if (d.function) |mf| {
+                    if (mf.is_pub) {
+                        has_methods = true;
+                        break;
+                    }
+                };
             }
             if (has_methods) {
                 try buf.writeAll("\n<ul class=\"toc-methods\">\n");
@@ -417,7 +440,12 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
 
             var has_methods = false;
             for (gr.decls.items) |d| {
-                if (d.kind == .function) if (d.function) |mf| { if (mf.is_pub) { has_methods = true; break; } };
+                if (d.kind == .function) if (d.function) |mf| {
+                    if (mf.is_pub) {
+                        has_methods = true;
+                        break;
+                    }
+                };
             }
             if (has_methods) {
                 try buf.writeAll("\n<ul class=\"toc-methods\">\n");
@@ -473,7 +501,10 @@ fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
         var lines = std.mem.splitScalar(u8, raw_content, '\n');
         while (lines.next()) |line| {
             const t = std.mem.trim(u8, line, " \t\r");
-            if (std.mem.startsWith(u8, t, "## ")) { has_h2 = true; break; }
+            if (std.mem.startsWith(u8, t, "## ")) {
+                has_h2 = true;
+                break;
+            }
         }
     }
     if (!has_h2) return;
@@ -552,7 +583,12 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
 
         var has_pub_decls = false;
         for (gr.decls.items) |d| {
-            if (d.kind == .function) if (d.function) |mf| { if (mf.is_pub) { has_pub_decls = true; break; } };
+            if (d.kind == .function) if (d.function) |mf| {
+                if (mf.is_pub) {
+                    has_pub_decls = true;
+                    break;
+                }
+            };
         }
         if (has_pub_decls) {
             try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
@@ -599,7 +635,12 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
 
     var has_pub_decls = false;
     for (c.decls.items) |d| {
-        if (d.kind == .function) if (d.function) |f| { if (f.is_pub) { has_pub_decls = true; break; } };
+        if (d.kind == .function) if (d.function) |f| {
+            if (f.is_pub) {
+                has_pub_decls = true;
+                break;
+            }
+        };
     }
     if (has_pub_decls) {
         try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
@@ -734,7 +775,7 @@ fn loadGuidesFromConfig(
     // Support both the old array-root format and the new object-root format
     // (where guides are nested under a "guides" key).
     const guides_array = switch (parsed.value) {
-        .array  => parsed.value,
+        .array => parsed.value,
         .object => |obj| obj.get("guides") orelse {
             std.log.warn("Config '{s}': no 'guides' key found", .{config_path});
             return &.{};
@@ -833,14 +874,22 @@ fn loadGuidesFromDir(
         errdefer allocator.free(title);
 
         try list.append(allocator, .{ .entry = .{
-            .slug = slug, .title = title, .content = content,
+            .slug = slug,
+            .title = title,
+            .content = content,
         } });
     }
 
     std.mem.sort(GuideNavItem, list.items, {}, struct {
         fn lt(_: void, a: GuideNavItem, b: GuideNavItem) bool {
-            const as = switch (a) { .entry => |e| e.slug, .section => |s| s.title };
-            const bs = switch (b) { .entry => |e| e.slug, .section => |s| s.title };
+            const as = switch (a) {
+                .entry => |e| e.slug,
+                .section => |s| s.title,
+            };
+            const bs = switch (b) {
+                .entry => |e| e.slug,
+                .section => |s| s.title,
+            };
             return std.mem.lessThan(u8, as, bs);
         }
     }.lt);
@@ -850,7 +899,7 @@ fn loadGuidesFromDir(
 
 fn loadGuides(allocator: std.mem.Allocator, docs_path: []const u8) ![]GuideNavItem {
     return if (std.mem.endsWith(u8, docs_path, ".json") or
-               std.mem.endsWith(u8, docs_path, ".conf"))
+        std.mem.endsWith(u8, docs_path, ".conf"))
         loadGuidesFromConfig(allocator, docs_path)
     else
         loadGuidesFromDir(allocator, docs_path);
@@ -875,6 +924,8 @@ pub const SiteConf = struct {
     guides: []GuideNavItem,
     /// Directory containing the conf file; used to resolve relative image paths.
     conf_dir: []const u8,
+    /// Slug of the guide to render as `index.html` (`"home"` key), or null.
+    home_slug: ?[]const u8,
 
     pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
         if (self.name) |n| allocator.free(n);
@@ -885,6 +936,7 @@ pub const SiteConf = struct {
         if (self.emoji) |e| allocator.free(e);
         freeGuides(allocator, self.guides);
         allocator.free(self.conf_dir);
+        if (self.home_slug) |hs| allocator.free(hs);
     }
 };
 
@@ -986,13 +1038,24 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         guides = try items.toOwnedSlice(allocator);
     };
 
+    // --- home ---
+    // Accept either a slug ("getting-started") or a src filename ("getting-started.md").
+    const home_slug: ?[]const u8 = if (obj.get("home")) |v| blk: {
+        if (v != .string) break :blk null;
+        const home_src = v.string;
+        const home_slug_str = if (std.mem.endsWith(u8, home_src, ".md")) home_src[0 .. home_src.len - 3] else home_src;
+        break :blk try allocator.dupe(u8, home_slug_str);
+    } else null;
+    errdefer if (home_slug) |hs| allocator.free(hs);
+
     return .{
-        .name     = name,
-        .sources  = sources,
-        .theme    = theme,
-        .emoji    = ep,
-        .guides   = guides,
+        .name = name,
+        .sources = sources,
+        .theme = theme,
+        .emoji = ep,
+        .guides = guides,
         .conf_dir = try allocator.dupe(u8, conf_dir),
+        .home_slug = home_slug,
     };
 }
 
@@ -1024,6 +1087,9 @@ pub fn renderSite(
     /// Directory of the conf file; used to resolve relative image paths in guides.
     /// Pass null when running without a conf file.
     conf_dir: ?[]const u8,
+    /// Slug of the guide to render as `index.html`. When set the default module
+    /// listing is replaced by that guide's content.
+    home_slug: ?[]const u8,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
     defer out_dir.close();
@@ -1055,9 +1121,26 @@ pub fn renderSite(
 
     // ── index.html ──────────────────────────────────────────────────────────
     progress.begin("writing index");
-    {
+
+    // Find the home guide entry if one is designated.
+    const home_entry: ?GuideEntry = blk: {
+        const hs = home_slug orelse break :blk null;
+        for (guides) |item| switch (item) {
+            .entry => |e| if (std.mem.eql(u8, e.slug, hs)) break :blk e,
+            .section => |s| for (s.entries) |e| {
+                if (std.mem.eql(u8, e.slug, hs)) break :blk e;
+            },
+        };
+        break :blk null;
+    };
+
+    if (home_entry) |he| {
+        // Render the designated guide as index.html.
+        try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, true);
+    } else {
         var buf = Buf.init(allocator, emoji_provider, theme);
         defer buf.deinit();
+        buf.home_slug = home_slug;
 
         try writeHeader(&buf, project_name, project_name, mods, guides, null, null, ".");
 
@@ -1075,8 +1158,8 @@ pub fn renderSite(
                 var found_doc = false;
                 for (mod.symbols.items) |sym| {
                     const doc: ?[]const u8 = switch (sym.kind) {
-                        .function  => if (sym.function)  |f| f.doc else null,
-                        .variable  => if (sym.variable)  |v| v.doc else null,
+                        .function => if (sym.function) |f| f.doc else null,
+                        .variable => if (sym.variable) |v| v.doc else null,
                         .container => if (sym.container) |c| c.doc else null,
                         else => null,
                     };
@@ -1102,7 +1185,12 @@ pub fn renderSite(
             try buf.writeAll("<h2>Guides</h2>\n<ul class=\"module-list\">\n");
             for (guides) |item| switch (item) {
                 .entry => |e| {
-                    try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                    const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                    if (is_home) {
+                        try buf.print("<li><a href=\"./index.html\">", .{});
+                    } else {
+                        try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                    }
                     try htmlEscape(&buf, e.title);
                     try buf.writeAll("</a></li>\n");
                 },
@@ -1126,7 +1214,7 @@ pub fn renderSite(
         const file = try out_dir.createFile("index.html", .{});
         defer file.close();
         try buf.flush(file);
-    }
+    } // end else (no home guide)
 
     // ── api/<module>.html ────────────────────────────────────────────────────
     {
@@ -1154,17 +1242,21 @@ pub fn renderSite(
         try htmlEscape(&buf, mod.path);
         try buf.writeAll("</div>\n");
 
-        var has_types  = false;
-        var has_fns    = false;
+        var has_types = false;
+        var has_fns = false;
         var has_consts = false;
         for (mod.symbols.items) |sym| {
             switch (sym.kind) {
-                .container => if (sym.container) |c| { if (c.is_pub) has_types = true; },
-                .function  => if (sym.function)  |f| {
-                    if (f.is_pub and f.generic_return != null) has_types = true;
-                    if (f.is_pub and f.generic_return == null) has_fns   = true;
+                .container => if (sym.container) |c| {
+                    if (c.is_pub) has_types = true;
                 },
-                .variable  => if (sym.variable)  |v| { if (v.is_pub) has_consts = true; },
+                .function => if (sym.function) |f| {
+                    if (f.is_pub and f.generic_return != null) has_types = true;
+                    if (f.is_pub and f.generic_return == null) has_fns = true;
+                },
+                .variable => if (sym.variable) |v| {
+                    if (v.is_pub) has_consts = true;
+                },
                 else => {},
             }
         }
@@ -1214,7 +1306,7 @@ pub fn renderSite(
     if (guidesHaveEntries(guides)) {
         var n_guides: usize = 0;
         for (guides) |item| switch (item) {
-            .entry   => n_guides += 1,
+            .entry => n_guides += 1,
             .section => |s| n_guides += s.entries.len,
         };
         var label_buf: [64]u8 = undefined;
@@ -1225,12 +1317,14 @@ pub fn renderSite(
 
         for (guides) |item| switch (item) {
             .entry => |e| {
+                if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false);
             },
             .section => |s| for (s.entries) |e| {
+                if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false);
             },
         };
         Progress.endFiles();
@@ -1264,9 +1358,9 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
                 // module.Symbol — look up the symbol within this module only.
                 for (mod.symbols.items) |sym| {
                     const sym_name: ?[]const u8 = switch (sym.kind) {
-                        .function  => if (sym.function)  |f| (if (f.is_pub) f.name  else null) else null,
-                        .variable  => if (sym.variable)  |v| (if (v.is_pub) v.name  else null) else null,
-                        .container => if (sym.container) |c| (if (c.is_pub) c.name  else null) else null,
+                        .function => if (sym.function) |f| (if (f.is_pub) f.name else null) else null,
+                        .variable => if (sym.variable) |v| (if (v.is_pub) v.name else null) else null,
+                        .container => if (sym.container) |c| (if (c.is_pub) c.name else null) else null,
                         else => null,
                     };
                     if (sym_name) |n| {
@@ -1297,9 +1391,9 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
     for (mods) |mod| {
         for (mod.symbols.items) |sym| {
             const sym_name: ?[]const u8 = switch (sym.kind) {
-                .function  => if (sym.function)  |f| (if (f.is_pub) f.name  else null) else null,
-                .variable  => if (sym.variable)  |v| (if (v.is_pub) v.name  else null) else null,
-                .container => if (sym.container) |c| (if (c.is_pub) c.name  else null) else null,
+                .function => if (sym.function) |f| (if (f.is_pub) f.name else null) else null,
+                .variable => if (sym.variable) |v| (if (v.is_pub) v.name else null) else null,
+                .container => if (sym.container) |c| (if (c.is_pub) c.name else null) else null,
                 else => null,
             };
             if (sym_name) |n| {
@@ -1330,14 +1424,14 @@ fn resolveInternalLinks(
 
     var rest = html;
     while (true) {
-        const sym_pos   = std.mem.indexOf(u8, rest, "href=\"sym:");
-        const mod_pos   = std.mem.indexOf(u8, rest, "href=\"mod:");
+        const sym_pos = std.mem.indexOf(u8, rest, "href=\"sym:");
+        const mod_pos = std.mem.indexOf(u8, rest, "href=\"mod:");
         const guide_pos = std.mem.indexOf(u8, rest, "href=\"guide:");
 
         // Pick the earliest marker.
         var fp: usize = std.math.maxInt(usize);
-        if (sym_pos)   |p| fp = @min(fp, p);
-        if (mod_pos)   |p| fp = @min(fp, p);
+        if (sym_pos) |p| fp = @min(fp, p);
+        if (mod_pos) |p| fp = @min(fp, p);
         if (guide_pos) |p| fp = @min(fp, p);
         if (fp == std.math.maxInt(usize)) {
             try out.appendSlice(allocator, rest);
@@ -1484,15 +1578,20 @@ fn renderGuidePage(
     emoji_provider: emoji.Provider,
     theme: Theme,
     conf_dir: ?[]const u8,
+    home_slug: ?[]const u8,
+    /// When true, output to `index.html` with prefix `.` instead of `guide/{slug}.html`.
+    is_home: bool,
 ) !void {
     var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
+    buf.home_slug = home_slug;
 
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
     defer allocator.free(title);
 
-    // Pages in subdirs (slug contains '/') need an extra ".." to reach root
-    const prefix: []const u8 = if (std.mem.indexOfScalar(u8, entry.slug, '/') != null)
+    const prefix: []const u8 = if (is_home)
+        "."
+    else if (std.mem.indexOfScalar(u8, entry.slug, '/') != null)
         "../.."
     else
         "..";
@@ -1518,7 +1617,10 @@ fn renderGuidePage(
     try writeGuideToc(&buf, entry.content);
     try writeFooter(&buf);
 
-    const filename = try std.fmt.allocPrint(allocator, "guide/{s}.html", .{entry.slug});
+    const filename = if (is_home)
+        try allocator.dupe(u8, "index.html")
+    else
+        try std.fmt.allocPrint(allocator, "guide/{s}.html", .{entry.slug});
     defer allocator.free(filename);
 
     // Ensure parent directory exists for nested slugs

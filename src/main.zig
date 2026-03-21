@@ -1,8 +1,8 @@
 const std = @import("std");
-const symbols = @import("symbols");
-const render = @import("render");
+pub const symbols = @import("symbols");
+pub const render = @import("render");
 const zargs = @import("zargunaught");
-const emoji = @import("emoji");
+pub const emoji = @import("emoji");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -13,14 +13,14 @@ pub fn main() !void {
         .name = "zkdocs",
         .description = "Generate documentation for Zig projects.",
         .opts = &.{
-            .{ .longName = "conf",  .shortName = "c", .description = "Path to zkdocs.conf project config file.", .maxNumParams = 1 },
-            .{ .longName = "root",  .shortName = "r", .description = "Root source file to extract symbols from (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "name",  .shortName = "n", .description = "Display name for the project (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "out",   .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
-            .{ .longName = "docs",  .shortName = "d", .description = "Path to a guides config file or directory of .md files.", .maxNumParams = 1 },
+            .{ .longName = "conf", .shortName = "c", .description = "Path to zkdocs.conf project config file.", .maxNumParams = 1 },
+            .{ .longName = "root", .shortName = "r", .description = "Root source file to extract symbols from (overrides conf).", .maxNumParams = 1 },
+            .{ .longName = "name", .shortName = "n", .description = "Display name for the project (overrides conf).", .maxNumParams = 1 },
+            .{ .longName = "out", .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
+            .{ .longName = "docs", .shortName = "d", .description = "Path to a guides config file or directory of .md files.", .maxNumParams = 1 },
             .{ .longName = "theme", .shortName = "t", .description = "Color theme: default, monokai, vscode-light, vscode-dark (overrides conf).", .maxNumParams = 1 },
             .{ .longName = "emoji", .shortName = "e", .description = "Emoji provider: none, unicode (default), twemoji, noto, openmoji (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "help",  .shortName = "h", .description = "Print help information." },
+            .{ .longName = "help", .shortName = "h", .description = "Print help information." },
         },
     });
     defer parser.deinit();
@@ -85,7 +85,7 @@ pub fn main() !void {
             (preloaded_guides != null and preloaded_guides.?.len > 0);
         const total_steps: usize =
             @as(usize, if (root_path != null) 1 else 0) + // extracting symbols
-            2 +                                            // writing index + api
+            2 + // writing index + api
             @as(usize, if (has_guides) 1 else 0);
         var progress = render.Progress.init(total_steps);
 
@@ -96,7 +96,8 @@ pub fn main() !void {
         defer if (root_path != null) symbols.deinitModules(allocator, modules);
 
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
-        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, preloaded_guides, emoji_provider, theme, &progress, conf_dir);
+        const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
+        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, preloaded_guides, emoji_provider, theme, &progress, conf_dir, home_slug);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(allocator, rp)
@@ -123,7 +124,7 @@ fn printDoc(pfx: []const u8, extra: []const u8, doc: []const u8) void {
 
 fn printSymbols(syms: []const symbols.Symbol, depth: usize) void {
     var buf: [32]u8 = undefined;
-    const pfx = buf[0 .. @min(depth * 2, buf.len)];
+    const pfx = buf[0..@min(depth * 2, buf.len)];
     @memset(pfx, ' ');
 
     for (syms) |sym| {

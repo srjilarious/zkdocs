@@ -1,6 +1,6 @@
 const std = @import("std");
 const zmd = @import("zmd");
-const highlight = @import("highlight");
+pub const highlight = @import("highlight");
 
 /// Render `markdown` to an HTML fragment (no DOCTYPE/html/body wrapper).
 pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror![]const u8 {
@@ -482,7 +482,7 @@ fn restoreCodeIndent(allocator: std.mem.Allocator, content: []const u8) ![]const
     var out = std.ArrayList(u8){};
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, indent);
-    try out.appendSlice(allocator, content[0..nl + 1]);
+    try out.appendSlice(allocator, content[0 .. nl + 1]);
     try out.appendSlice(allocator, rest);
     return out.toOwnedSlice(allocator);
 }

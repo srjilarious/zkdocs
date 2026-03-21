@@ -93,10 +93,8 @@ pub fn build(b: *std.Build) void {
     // Self-documentation: generate zkdocs HTML docs from docs/guides.json
     const docs_run = b.addRunArtifact(exe);
     docs_run.addArgs(&.{
-        "--root", "src/build_helper.zig",
-        "--name", "zkdocs",
-        "--out",  "out/docs",
-        "--docs", "docs/guides.json",
+        "--out",  "out",
+        "--conf", "docs/zkdocs.conf",
     });
     const docs_step = b.step("docs", "Generate zkdocs HTML documentation");
     docs_step.dependOn(&docs_run.step);
