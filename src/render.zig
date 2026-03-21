@@ -294,14 +294,12 @@ fn writeHeader(
     try htmlEscape(buf, title);
     try buf.print(
         \\</title>
-        \\<style>
-        \\{s}
-        \\</style>
+        \\<link rel="stylesheet" href="{s}/assets/style.css">
         \\</head>
         \\<body>
         \\<nav class="sidebar">
         \\<a class="logo" href="{s}/index.html">
-    , .{ CSS, prefix });
+    , .{ prefix, prefix });
     try htmlEscape(buf, project_name);
     try buf.writeAll("</a>\n");
 
@@ -875,6 +873,8 @@ pub const SiteConf = struct {
     emoji: ?[]const u8,
     /// Parsed guide nav items (`"guides"` array).
     guides: []GuideNavItem,
+    /// Directory containing the conf file; used to resolve relative image paths.
+    conf_dir: []const u8,
 
     pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
         if (self.name) |n| allocator.free(n);
@@ -884,6 +884,7 @@ pub const SiteConf = struct {
         }
         if (self.emoji) |e| allocator.free(e);
         freeGuides(allocator, self.guides);
+        allocator.free(self.conf_dir);
     }
 };
 
@@ -986,11 +987,12 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
     };
 
     return .{
-        .name    = name,
-        .sources = sources,
-        .theme   = theme,
-        .emoji   = ep,
-        .guides  = guides,
+        .name     = name,
+        .sources  = sources,
+        .theme    = theme,
+        .emoji    = ep,
+        .guides   = guides,
+        .conf_dir = try allocator.dupe(u8, conf_dir),
     };
 }
 
@@ -1019,11 +1021,22 @@ pub fn renderSite(
     emoji_provider: emoji.Provider,
     theme: Theme,
     progress: *Progress,
+    /// Directory of the conf file; used to resolve relative image paths in guides.
+    /// Pass null when running without a conf file.
+    conf_dir: ?[]const u8,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
     defer out_dir.close();
 
     try out_dir.makePath("api");
+
+    // Write the stylesheet as a shared file rather than inlining it in every page.
+    try out_dir.makePath("assets");
+    {
+        const css_file = try out_dir.createFile("assets/style.css", .{});
+        defer css_file.close();
+        try css_file.writeAll(CSS);
+    }
 
     const owns_guides = preloaded_guides == null and docs_dir != null;
     const guides: []GuideNavItem = if (preloaded_guides) |pg|
@@ -1213,11 +1226,11 @@ pub fn renderSite(
         for (guides) |item| switch (item) {
             .entry => |e| {
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir);
             },
             .section => |s| for (s.entries) |e| {
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir);
             },
         };
         Progress.endFiles();
@@ -1383,6 +1396,84 @@ fn resolveInternalLinks(
     return out.toOwnedSlice(allocator);
 }
 
+// ---------------------------------------------------------------------------
+// Image processing
+// ---------------------------------------------------------------------------
+
+fn isRelativeUrl(url: []const u8) bool {
+    if (std.mem.startsWith(u8, url, "/")) return false;
+    if (std.mem.indexOf(u8, url, "://") != null) return false;
+    return url.len > 0;
+}
+
+/// Copy an image from `conf_dir/rel_path` into `out_dir/assets/rel_path`,
+/// creating intermediate directories as needed.
+fn copyImageFile(
+    allocator: std.mem.Allocator,
+    conf_dir: []const u8,
+    rel_path: []const u8,
+    out_dir: std.fs.Dir,
+) !void {
+    const dest_rel = try std.fs.path.join(allocator, &.{ "assets", rel_path });
+    defer allocator.free(dest_rel);
+
+    if (std.fs.path.dirname(dest_rel)) |parent| {
+        try out_dir.makePath(parent);
+    }
+
+    const src_path = try std.fs.path.join(allocator, &.{ conf_dir, rel_path });
+    defer allocator.free(src_path);
+
+    try std.fs.cwd().copyFile(src_path, out_dir, dest_rel, .{});
+}
+
+/// Scan rendered HTML for `<img src="...">` elements; copy any relative-path
+/// images into `out_dir/assets/` and rewrite their src to `{prefix}/assets/…`.
+fn processImages(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    conf_dir: []const u8,
+    out_dir: std.fs.Dir,
+    prefix: []const u8,
+) ![]const u8 {
+    const marker = "src=\"";
+    var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
+
+    var rest = html;
+    while (true) {
+        const pos = std.mem.indexOf(u8, rest, marker) orelse {
+            try out.appendSlice(allocator, rest);
+            break;
+        };
+
+        try out.appendSlice(allocator, rest[0..pos]);
+
+        const after = rest[pos + marker.len ..];
+        const close = std.mem.indexOfScalar(u8, after, '"') orelse {
+            try out.appendSlice(allocator, marker);
+            rest = after;
+            continue;
+        };
+
+        const src = after[0..close];
+        if (isRelativeUrl(src)) {
+            copyImageFile(allocator, conf_dir, src, out_dir) catch |err| {
+                std.debug.print("Warning: could not copy image '{s}': {}\n", .{ src, err });
+            };
+            try out.writer(allocator).print("src=\"{s}/assets/{s}", .{ prefix, src });
+        } else {
+            try out.appendSlice(allocator, marker);
+            try out.appendSlice(allocator, src);
+        }
+
+        // after[close..] starts with the closing `"` — preserved on next pass.
+        rest = after[close..];
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
 fn renderGuidePage(
     allocator: std.mem.Allocator,
     out_dir: *std.fs.Dir,
@@ -1392,6 +1483,7 @@ fn renderGuidePage(
     guides: []const GuideNavItem,
     emoji_provider: emoji.Provider,
     theme: Theme,
+    conf_dir: ?[]const u8,
 ) !void {
     var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
@@ -1411,7 +1503,12 @@ fn renderGuidePage(
     defer allocator.free(raw);
     const with_emoji = try emoji.replaceInHtml(allocator, raw, emoji_provider);
     defer allocator.free(with_emoji);
-    const html = try resolveInternalLinks(allocator, with_emoji, mods, prefix);
+    const with_images = if (conf_dir) |cd|
+        try processImages(allocator, with_emoji, cd, out_dir.*, prefix)
+    else
+        try allocator.dupe(u8, with_emoji);
+    defer allocator.free(with_images);
+    const html = try resolveInternalLinks(allocator, with_images, mods, prefix);
     defer allocator.free(html);
 
     try buf.writeAll("<div class=\"guide-content\">\n");

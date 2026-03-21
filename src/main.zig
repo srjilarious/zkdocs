@@ -95,7 +95,8 @@ pub fn main() !void {
         } else &.{};
         defer if (root_path != null) symbols.deinitModules(allocator, modules);
 
-        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, preloaded_guides, emoji_provider, theme, &progress);
+        const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
+        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, preloaded_guides, emoji_provider, theme, &progress, conf_dir);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(allocator, rp)
