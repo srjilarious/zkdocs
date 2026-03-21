@@ -1,8 +1,18 @@
 const std = @import("std");
 const ts = @import("tree_sitter");
 const ts_zig = @import("tree-sitter-zig");
+const ts_json = @import("tree-sitter-json");
 
-const highlights_scm = @embedFile("assets/highlights.scm");
+const highlights_zig = @embedFile("assets/highlights.scm");
+
+const highlights_json =
+    \\(pair key: (_) @string.special.key)
+    \\(string) @string
+    \\(number) @number
+    \\[(null)(true)(false)] @constant.builtin
+    \\(escape_sequence) @string
+    \\(comment) @comment
+;
 
 const CaptureRange = struct {
     start: u32,
@@ -11,24 +21,38 @@ const CaptureRange = struct {
     pattern_index: u16,
 };
 
-/// Highlight Zig source code and return an HTML fragment with `<span>` elements.
-/// The returned slice is owned by the caller (allocated with `allocator`).
-/// Falls back gracefully — if parsing fails, returns HTML-escaped plain text.
+/// Highlight source code for the given language fence tag.
+/// Falls back to plain escaped text for unknown languages.
+pub fn highlight(allocator: std.mem.Allocator, lang: []const u8, source: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, lang, "zig")) return highlightWith(allocator, ts_zig.language(), highlights_zig, source);
+    if (std.mem.eql(u8, lang, "json")) return highlightWith(allocator, ts_json.language(), highlights_json, source);
+    return escapedOnly(allocator, source);
+}
+
+/// Highlight Zig source code (kept for backwards compat with callers).
 pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
+    return highlightWith(allocator, ts_zig.language(), highlights_zig, source);
+}
+
+fn highlightWith(
+    allocator: std.mem.Allocator,
+    grammar: *const anyopaque,
+    query_src: []const u8,
+    source: []const u8,
+) ![]const u8 {
     const parser = ts.Parser.create();
     defer parser.destroy();
 
-    const lang: *const ts.Language = @ptrCast(@alignCast(ts_zig.language()));
+    const lang: *const ts.Language = @ptrCast(@alignCast(grammar));
     try parser.setLanguage(lang);
 
     const tree = parser.parseString(source, null) orelse {
-        // No tree — return plain escaped text
         return escapedOnly(allocator, source);
     };
     defer tree.destroy();
 
     var error_offset: u32 = 0;
-    const query = ts.Query.create(lang, highlights_scm, &error_offset) catch {
+    const query = ts.Query.create(lang, query_src, &error_offset) catch {
         return escapedOnly(allocator, source);
     };
     defer query.destroy();
@@ -37,7 +61,6 @@ pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u
     defer cursor.destroy();
     cursor.exec(query, tree.rootNode());
 
-    // Collect captures.
     var ranges: std.ArrayList(CaptureRange) = .{};
     defer ranges.deinit(allocator);
 
@@ -56,7 +79,6 @@ pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u
         });
     }
 
-    // Sort: start byte ascending, then pattern_index ascending (lower = higher priority).
     std.mem.sort(CaptureRange, ranges.items, {}, struct {
         fn lt(_: void, a: CaptureRange, b: CaptureRange) bool {
             if (a.start != b.start) return a.start < b.start;
@@ -64,7 +86,6 @@ pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u
         }
     }.lt);
 
-    // Walk source left-to-right, emitting non-overlapping spans.
     var out: std.ArrayList(u8) = .{};
     errdefer out.deinit(allocator);
 
@@ -73,17 +94,14 @@ pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u
     var ri: usize = 0;
 
     while (pos < src_len) {
-        // Skip ranges whose end is at or before current position.
         while (ri < ranges.items.len and ranges.items[ri].end <= pos) ri += 1;
 
         const next_start: u32 = if (ri < ranges.items.len) ranges.items[ri].start else src_len;
 
         if (next_start > pos) {
-            // Emit plain (escaped) text up to the next capture.
             try appendEscaped(allocator, &out, source[pos..next_start]);
             pos = next_start;
         } else if (ri < ranges.items.len) {
-            // Emit highlighted span.
             const r = ranges.items[ri];
             ri += 1;
             try out.appendSlice(allocator, "<span class=\"");
@@ -92,7 +110,6 @@ pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u
             try appendEscaped(allocator, &out, source[r.start..r.end]);
             try out.appendSlice(allocator, "</span>");
             pos = r.end;
-            // Skip any captures that overlap this span.
             while (ri < ranges.items.len and ranges.items[ri].start < pos) ri += 1;
         } else {
             break;
@@ -120,7 +137,7 @@ fn cssClass(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "boolean")) return "hl-constant";
     if (std.mem.startsWith(u8, name, "comment")) return "hl-comment";
     if (std.mem.eql(u8, name, "operator")) return "hl-operator";
-    return null; // variable, punctuation, label, module, spell, …
+    return null;
 }
 
 fn appendEscaped(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {

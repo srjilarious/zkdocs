@@ -17,7 +17,6 @@ pub fn main() !void {
             .{ .longName = "root", .shortName = "r", .description = "Root source file to extract symbols from (overrides conf).", .maxNumParams = 1 },
             .{ .longName = "name", .shortName = "n", .description = "Display name for the project (overrides conf).", .maxNumParams = 1 },
             .{ .longName = "out", .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
-            .{ .longName = "docs", .shortName = "d", .description = "Path to a guides config file or directory of .md files.", .maxNumParams = 1 },
             .{ .longName = "theme", .shortName = "t", .description = "Color theme: default, monokai, vscode-light, vscode-dark (overrides conf).", .maxNumParams = 1 },
             .{ .longName = "emoji", .shortName = "e", .description = "Emoji provider: none, unicode (default), twemoji, noto, openmoji (overrides conf).", .maxNumParams = 1 },
             .{ .longName = "help", .shortName = "h", .description = "Print help information." },
@@ -76,13 +75,10 @@ pub fn main() !void {
     };
 
     if (args.optionVal("out")) |out_path| {
-        // --docs flag takes precedence over conf guides.
-        const docs_dir: ?[]const u8 = args.optionVal("docs");
-        const preloaded_guides: ?[]render.GuideNavItem =
-            if (docs_dir == null) if (site_conf) |*sc| sc.guides else null else null;
+        const guides: []render.GuideNavItem =
+            if (site_conf) |*sc| sc.guides else &.{};
 
-        const has_guides = docs_dir != null or
-            (preloaded_guides != null and preloaded_guides.?.len > 0);
+        const has_guides = guides.len > 0;
         const total_steps: usize =
             @as(usize, if (root_path != null) 1 else 0) + // extracting symbols
             2 + // writing index + api
@@ -97,7 +93,7 @@ pub fn main() !void {
 
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
-        try render.renderSite(allocator, out_path, project_name, modules, docs_dir, preloaded_guides, emoji_provider, theme, &progress, conf_dir, home_slug);
+        try render.renderSite(allocator, out_path, project_name, modules, guides, emoji_provider, theme, &progress, conf_dir, home_slug);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(allocator, rp)

@@ -22,5 +22,6 @@
             .url = "https://github.com/tree-sitter-grammars/tree-sitter-zig/archive/refs/heads/master.tar.gz",
             .hash = "tree_sitter_zig-1.1.2-AAAAAJ57XACsD_XBHC4i6G6rnCsZ1dZj7CLRTC09toEB",
         },
+
     },
 }

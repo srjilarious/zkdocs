@@ -757,153 +757,6 @@ pub fn parseJsonWithComments(
     return std.json.parseFromSlice(std.json.Value, allocator, stripped, .{});
 }
 
-fn loadGuidesFromConfig(
-    allocator: std.mem.Allocator,
-    config_path: []const u8,
-) ![]GuideNavItem {
-    const raw = std.fs.cwd().readFileAlloc(allocator, config_path, 1 * 1024 * 1024) catch |err| {
-        std.log.warn("Cannot open guides config '{s}': {}", .{ config_path, err });
-        return &.{};
-    };
-    defer allocator.free(raw);
-
-    const config_dir = std.fs.path.dirname(config_path) orelse ".";
-
-    const parsed = try parseJsonWithComments(allocator, raw);
-    defer parsed.deinit();
-
-    // Support both the old array-root format and the new object-root format
-    // (where guides are nested under a "guides" key).
-    const guides_array = switch (parsed.value) {
-        .array => parsed.value,
-        .object => |obj| obj.get("guides") orelse {
-            std.log.warn("Config '{s}': no 'guides' key found", .{config_path});
-            return &.{};
-        },
-        else => {
-            std.log.warn("Config '{s}': expected a JSON array or object", .{config_path});
-            return &.{};
-        },
-    };
-
-    if (guides_array != .array) {
-        std.log.warn("Config '{s}': 'guides' value must be a JSON array", .{config_path});
-        return &.{};
-    }
-
-    var items = std.ArrayList(GuideNavItem){};
-    errdefer {
-        for (items.items) |*it| freeNavItem(allocator, it);
-        items.deinit(allocator);
-    }
-
-    for (guides_array.array.items) |json_item| {
-        if (json_item != .object) continue;
-        const obj = json_item.object;
-
-        if (obj.get("section")) |sec_val| {
-            if (sec_val != .string) continue;
-            const sec_title = try allocator.dupe(u8, sec_val.string);
-            errdefer allocator.free(sec_title);
-
-            var sec_entries = std.ArrayList(GuideEntry){};
-            errdefer {
-                for (sec_entries.items) |*e| freeGuideEntry(allocator, e);
-                sec_entries.deinit(allocator);
-            }
-
-            if (obj.get("entries")) |ev| if (ev == .array) {
-                for (ev.array.items) |ei| {
-                    if (ei != .object) continue;
-                    const e = try loadGuideEntry(allocator, ei.object, config_dir);
-                    errdefer freeGuideEntry(allocator, @constCast(&e));
-                    try sec_entries.append(allocator, e);
-                }
-            };
-
-            const sec_slice = try sec_entries.toOwnedSlice(allocator);
-            errdefer {
-                for (sec_slice) |*e| freeGuideEntry(allocator, e);
-                allocator.free(sec_slice);
-            }
-            try items.append(allocator, .{ .section = .{
-                .title = sec_title,
-                .entries = sec_slice,
-            } });
-        } else if (obj.get("src") != null) {
-            const e = try loadGuideEntry(allocator, obj, config_dir);
-            errdefer freeGuideEntry(allocator, @constCast(&e));
-            try items.append(allocator, .{ .entry = e });
-        }
-    }
-
-    return items.toOwnedSlice(allocator);
-}
-
-fn loadGuidesFromDir(
-    allocator: std.mem.Allocator,
-    docs_dir_path: []const u8,
-) ![]GuideNavItem {
-    var dir = std.fs.cwd().openDir(docs_dir_path, .{ .iterate = true }) catch |err| {
-        std.log.warn("Cannot open docs dir '{s}': {}", .{ docs_dir_path, err });
-        return &.{};
-    };
-    defer dir.close();
-
-    var list = std.ArrayList(GuideNavItem){};
-    errdefer {
-        for (list.items) |*it| freeNavItem(allocator, it);
-        list.deinit(allocator);
-    }
-
-    var iter = dir.iterate();
-    while (try iter.next()) |de| {
-        if (de.kind != .file) continue;
-        if (!std.mem.endsWith(u8, de.name, ".md")) continue;
-
-        const content = dir.readFileAlloc(allocator, de.name, 4 * 1024 * 1024) catch |err| {
-            std.log.warn("Cannot read '{s}': {}", .{ de.name, err });
-            continue;
-        };
-        errdefer allocator.free(content);
-
-        const stem_slice = de.name[0 .. de.name.len - 3];
-        const slug = try allocator.dupe(u8, stem_slice);
-        errdefer allocator.free(slug);
-        const title = try allocator.dupe(u8, extractTitle(content, stem_slice));
-        errdefer allocator.free(title);
-
-        try list.append(allocator, .{ .entry = .{
-            .slug = slug,
-            .title = title,
-            .content = content,
-        } });
-    }
-
-    std.mem.sort(GuideNavItem, list.items, {}, struct {
-        fn lt(_: void, a: GuideNavItem, b: GuideNavItem) bool {
-            const as = switch (a) {
-                .entry => |e| e.slug,
-                .section => |s| s.title,
-            };
-            const bs = switch (b) {
-                .entry => |e| e.slug,
-                .section => |s| s.title,
-            };
-            return std.mem.lessThan(u8, as, bs);
-        }
-    }.lt);
-
-    return list.toOwnedSlice(allocator);
-}
-
-fn loadGuides(allocator: std.mem.Allocator, docs_path: []const u8) ![]GuideNavItem {
-    return if (std.mem.endsWith(u8, docs_path, ".json") or
-        std.mem.endsWith(u8, docs_path, ".conf"))
-        loadGuidesFromConfig(allocator, docs_path)
-    else
-        loadGuidesFromDir(allocator, docs_path);
-}
 
 // ---------------------------------------------------------------------------
 // Full site config (zkdocs.conf)
@@ -1069,18 +922,14 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
 ///   out_path/
 ///     index.html
 ///     api/<module>.html     (one per module, pub symbols only)
-///     guide/<stem>.html     (one per .md file in docs_dir, if provided)
+///     guide/<slug>.html     (one per guide entry in zkdocs.conf)
 pub fn renderSite(
     allocator: std.mem.Allocator,
     out_path: []const u8,
     project_name: []const u8,
     mods: []const symbols.Module,
-    /// Path to a guides JSON/conf file or a directory of .md files. Ignored when
-    /// `preloaded_guides` is non-null.
-    docs_dir: ?[]const u8,
-    /// Pre-loaded guide nav items (e.g. from a `zkdocs.conf`). When non-null,
-    /// `docs_dir` is ignored and these guides are used directly (not freed).
-    preloaded_guides: ?[]GuideNavItem,
+    /// Guide nav items loaded from `zkdocs.conf`. Not freed by this function.
+    guides: []const GuideNavItem,
     emoji_provider: emoji.Provider,
     theme: Theme,
     progress: *Progress,
@@ -1104,14 +953,6 @@ pub fn renderSite(
         try css_file.writeAll(CSS);
     }
 
-    const owns_guides = preloaded_guides == null and docs_dir != null;
-    const guides: []GuideNavItem = if (preloaded_guides) |pg|
-        pg
-    else if (docs_dir) |dd|
-        try loadGuides(allocator, dd)
-    else
-        &.{};
-    defer if (owns_guides) freeGuides(allocator, guides);
 
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
 

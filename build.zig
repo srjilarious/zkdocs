@@ -36,11 +36,33 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/emoji.zig"),
     });
 
+    // JSON grammar (vendored — no build.zig in the upstream repo)
+    const json_grammar_lib = b.addLibrary(.{
+        .name = "tree-sitter-json",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    json_grammar_lib.addCSourceFile(.{
+        .file = b.path("src/grammars/json/parser.c"),
+        .flags = &.{"-std=c11"},
+    });
+    json_grammar_lib.addIncludePath(b.path("src/grammars/json"));
+
+    const json_grammar_mod = b.addModule("tree-sitter-json", .{
+        .root_source_file = b.path("src/grammars/json.zig"),
+    });
+    json_grammar_mod.linkLibrary(json_grammar_lib);
+
     const highlight_mod = b.addModule("highlight", .{
         .root_source_file = b.path("src/highlight.zig"),
     });
     highlight_mod.addImport("tree_sitter", tree_sitter_dep.module("tree_sitter"));
     highlight_mod.addImport("tree-sitter-zig", tree_sitter_zig_dep.module("tree-sitter-zig"));
+    highlight_mod.addImport("tree-sitter-json", json_grammar_mod);
 
     const markdown_mod = b.addModule("markdown", .{
         .root_source_file = b.path("src/markdown.zig"),

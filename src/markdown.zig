@@ -427,18 +427,14 @@ fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
     defer allocator.free(content);
 
     if (node.meta) |lang| {
-        if (std.mem.eql(u8, lang, "zig")) {
-            if (highlight.highlightZig(allocator, content)) |hl| {
-                defer allocator.free(hl);
-                return std.fmt.allocPrint(
-                    allocator,
-                    "<pre><code class=\"language-zig\">{s}</code></pre>\n",
-                    .{hl},
-                );
-            } else |_| {
-                // Fall through to default on any highlighting error.
-            }
-        }
+        if (highlight.highlight(allocator, lang, content)) |hl| {
+            defer allocator.free(hl);
+            return std.fmt.allocPrint(
+                allocator,
+                "<pre><code class=\"language-{s}\">{s}</code></pre>\n",
+                .{ lang, hl },
+            );
+        } else |_| {}
         return std.fmt.allocPrint(
             allocator,
             "<pre><code class=\"language-{s}\">{s}</code></pre>\n",
