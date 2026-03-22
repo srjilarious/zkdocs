@@ -273,6 +273,44 @@ fn writeDoc(buf: *Buf, doc: []const u8) !void {
 }
 
 // ---------------------------------------------------------------------------
+// Module nav helpers
+// ---------------------------------------------------------------------------
+
+/// Recursively write a module nav `<li>` with any child modules nested inside.
+fn writeModuleNavItem(
+    buf: *Buf,
+    mod: symbols.Module,
+    all_mods: []const symbols.Module,
+    active_module: ?[]const u8,
+    prefix: []const u8,
+) !void {
+    const active = if (active_module) |am| std.mem.eql(u8, am, mod.name) else false;
+    const cls: []const u8 = if (active) " class=\"active\"" else "";
+    try buf.print("<li><a href=\"{s}/api/{s}.html\"{s}>", .{ prefix, mod.name, cls });
+    try htmlEscape(buf, mod.name);
+    try buf.writeAll("</a>");
+
+    // Emit children (modules whose parent_name == this module's name).
+    var has_children = false;
+    for (all_mods) |child| {
+        if (child.parent_name) |pn| {
+            if (std.mem.eql(u8, pn, mod.name)) { has_children = true; break; }
+        }
+    }
+    if (has_children) {
+        try buf.writeAll("\n<ul class=\"nav-children\">\n");
+        for (all_mods) |child| {
+            if (child.parent_name) |pn| {
+                if (std.mem.eql(u8, pn, mod.name))
+                    try writeModuleNavItem(buf, child, all_mods, active_module, prefix);
+            }
+        }
+        try buf.writeAll("</ul>\n");
+    }
+    try buf.writeAll("</li>\n");
+}
+
+// ---------------------------------------------------------------------------
 // Page header / nav / footer
 // ---------------------------------------------------------------------------
 
@@ -377,11 +415,9 @@ fn writeHeader(
     if (mods.len > 0) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
         for (mods) |mod| {
-            const active = if (active_module) |am| std.mem.eql(u8, am, mod.name) else false;
-            const cls: []const u8 = if (active) " class=\"active\"" else "";
-            try buf.print("<li><a href=\"{s}/api/{s}.html\"{s}>", .{ prefix, mod.name, cls });
-            try htmlEscape(buf, mod.name);
-            try buf.writeAll("</a></li>\n");
+            // Only render top-level (root) modules here; children are nested inside their parent.
+            if (mod.parent_name == null)
+                try writeModuleNavItem(buf, mod, mods, active_module, prefix);
         }
         try buf.writeAll("</ul>\n</details>\n");
     }

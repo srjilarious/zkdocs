@@ -62,6 +62,9 @@ pub const Module = struct {
     name: []const u8,
     path: []const u8,
     symbols: std.ArrayListUnmanaged(Symbol),
+    /// Name of the module that directly imported this one, or null for roots.
+    /// Heap-allocated; freed by deinitModule.
+    parent_name: ?[]const u8 = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -657,6 +660,7 @@ pub fn extractModule(
 pub fn deinitModule(allocator: std.mem.Allocator, module: *Module) void {
     allocator.free(module.name);
     allocator.free(module.path);
+    if (module.parent_name) |pn| allocator.free(pn);
     for (module.symbols.items) |*sym| deinitSymbol(allocator, sym);
     module.symbols.deinit(allocator);
 }
@@ -704,6 +708,7 @@ fn extractModuleGraphRecurse(
     root_dir: []const u8, // absolute path of the root module's directory
     modules: *std.ArrayList(Module),
     visited: *std.StringHashMap(void),
+    parent_name: ?[]const u8,
 ) !void {
     // Resolve to an absolute path so symlinks / ".." don't create duplicates.
     const abs_path = try std.fs.cwd().realpathAlloc(allocator, path);
@@ -738,9 +743,10 @@ fn extractModuleGraphRecurse(
 
     var module = try extractModule(allocator, &tree, module_name, rel_path);
     errdefer deinitModule(allocator, &module);
+    module.parent_name = if (parent_name) |pn| try allocator.dupe(u8, pn) else null;
     try modules.append(allocator, module);
 
-    // Find and follow relative imports.
+    // Find and follow relative imports, recording this module as their parent.
     const dir_path = std.fs.path.dirname(abs_path) orelse ".";
     var import_paths = std.ArrayList([]const u8){};
     defer {
@@ -750,7 +756,7 @@ fn extractModuleGraphRecurse(
     try collectRelativeImports(allocator, tree, dir_path, &import_paths);
 
     for (import_paths.items) |import_path| {
-        try extractModuleGraphRecurse(allocator, import_path, root_dir, modules, visited);
+        try extractModuleGraphRecurse(allocator, import_path, root_dir, modules, visited, module_name);
     }
 }
 
@@ -779,6 +785,6 @@ pub fn extractModuleGraph(
     defer allocator.free(abs_root);
     const root_dir = std.fs.path.dirname(abs_root) orelse ".";
 
-    try extractModuleGraphRecurse(allocator, root_path, root_dir, &modules, &visited);
+    try extractModuleGraphRecurse(allocator, root_path, root_dir, &modules, &visited, null);
     return try modules.toOwnedSlice(allocator);
 }
