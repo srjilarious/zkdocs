@@ -303,10 +303,11 @@ fn writeHeader(
         \\<link rel="stylesheet" href="{s}/assets/style.css">
         \\<script>window.ZKDOCS_BASE='{s}/';</script>
         \\<script src="{s}/assets/minisearch.min.js" defer></script>
+        \\<script src="{s}/assets/search-data.js" defer></script>
         \\<script src="{s}/assets/search.js" defer></script>
         \\</head>
         \\<body>
-    , .{ prefix, prefix, prefix, prefix });
+    , .{ prefix, prefix, prefix, prefix, prefix });
     // Mobile top bar
     try buf.print(
         \\<div class="mobile-bar">
@@ -997,7 +998,8 @@ fn writeSearchIndex(
     var buf: std.ArrayList(u8) = .{};
     defer buf.deinit(allocator);
 
-    try buf.append(allocator, '[');
+    // Assign to a global so the index works on file:// URLs (fetch() is blocked there).
+    try buf.appendSlice(allocator, "window.ZKDOCS_SEARCH_INDEX=[");
     var id: usize = 0;
 
     // Guide entries
@@ -1062,9 +1064,9 @@ fn writeSearchIndex(
         }
     }
 
-    try buf.append(allocator, ']');
+    try buf.appendSlice(allocator, "];");
 
-    const file = try out_dir.createFile("search-index.json", .{});
+    const file = try out_dir.createFile("assets/search-data.js", .{});
     defer file.close();
     try file.writeAll(buf.items);
 }

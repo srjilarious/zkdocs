@@ -12,18 +12,26 @@
   }
 
   // ── Search ──────────────────────────────────────────────────────────────────
+  // The index is loaded from window.ZKDOCS_SEARCH_INDEX (set by search-data.js,
+  // a deferred script that runs before this one). Using a JS variable instead
+  // of fetch() means search works on file:// URLs without a web server.
 
   var ms = null;
+
+  function buildIndex() {
+    var docs = window.ZKDOCS_SEARCH_INDEX;
+    if (!docs || !docs.length) return;
+    ms = new MiniSearch({
+      fields: ['title', 'content'],
+      storeFields: ['title', 'url', 'type'],
+    });
+    ms.addAll(docs);
+  }
 
   function initSearch() {
     var input = document.getElementById('search-input');
     var box   = document.getElementById('search-results');
     if (!input || !box) return;
-
-    // Lazy-load the index the first time the user focuses the input.
-    input.addEventListener('focus', function () {
-      if (!ms) loadIndex(input);
-    }, { once: true });
 
     input.addEventListener('input', function () {
       var q = input.value.trim();
@@ -39,22 +47,6 @@
     document.addEventListener('click', function (e) {
       if (!e.target.closest('.search-box')) box.style.display = 'none';
     });
-  }
-
-  function loadIndex(input) {
-    var base = window.ZKDOCS_BASE || './';
-    fetch(base + 'search-index.json')
-      .then(function (r) { return r.json(); })
-      .then(function (docs) {
-        ms = new MiniSearch({
-          fields: ['title', 'content'],
-          storeFields: ['title', 'url', 'type'],
-        });
-        ms.addAll(docs);
-        // If the user already typed something while loading, run a search now.
-        if (input && input.value.trim()) input.dispatchEvent(new Event('input'));
-      })
-      .catch(function () { /* search unavailable – silently ignore */ });
   }
 
   function renderResults(hits, box) {
@@ -161,6 +153,7 @@
   // ── Boot ─────────────────────────────────────────────────────────────────────
 
   document.addEventListener('DOMContentLoaded', function () {
+    buildIndex();
     initSearch();
     initCopyButtons();
     initMobileNav();
