@@ -786,5 +786,12 @@ pub fn extractModuleGraph(
     const root_dir = std.fs.path.dirname(abs_root) orelse ".";
 
     try extractModuleGraphRecurse(allocator, root_path, root_dir, &modules, &visited, null);
-    return try modules.toOwnedSlice(allocator);
+    const slice = try modules.toOwnedSlice(allocator);
+    // Sort alphabetically by name so each sidebar level is ordered consistently.
+    std.mem.sort(Module, slice, {}, struct {
+        fn lessThan(_: void, a: Module, b: Module) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lessThan);
+    return slice;
 }
