@@ -1202,27 +1202,25 @@ pub fn renderSite(
                 try htmlEscape(&buf, mod.name);
                 try buf.writeAll("</a>");
 
-                var found_doc = false;
-                for (mod.symbols.items) |sym| {
-                    const doc: ?[]const u8 = switch (sym.kind) {
-                        .function => if (sym.function) |f| f.doc else null,
-                        .variable => if (sym.variable) |v| v.doc else null,
-                        .container => if (sym.container) |c| c.doc else null,
-                        else => null,
-                    };
-                    if (doc) |d| {
-                        try buf.writeAll("<div class=\"mod-doc\">");
-                        try htmlEscape(&buf, firstSentence(d));
-                        try buf.writeAll("</div>");
-                        found_doc = true;
-                        break;
+                // Prefer the file-level //! doc; fall back to first symbol doc, then path.
+                const blurb: ?[]const u8 = mod.doc orelse blk: {
+                    for (mod.symbols.items) |sym| {
+                        const d: ?[]const u8 = switch (sym.kind) {
+                            .function  => if (sym.function)  |f| f.doc else null,
+                            .variable  => if (sym.variable)  |v| v.doc else null,
+                            .container => if (sym.container) |c| c.doc else null,
+                            else       => null,
+                        };
+                        if (d != null) break :blk d;
                     }
-                }
-                if (!found_doc) {
-                    try buf.writeAll("<div class=\"mod-doc\">");
+                    break :blk null;
+                };
+                try buf.writeAll("<div class=\"mod-doc\">");
+                if (blurb) |b|
+                    try htmlEscape(&buf, firstSentence(b))
+                else
                     try htmlEscape(&buf, mod.path);
-                    try buf.writeAll("</div>");
-                }
+                try buf.writeAll("</div>");
                 try buf.writeAll("</li>\n");
             }
             try buf.writeAll("</ul>\n");
@@ -1288,6 +1286,7 @@ pub fn renderSite(
         try buf.writeAll("</h1>\n<div class=\"mod-path\">");
         try htmlEscape(&buf, mod.path);
         try buf.writeAll("</div>\n");
+        if (mod.doc) |doc| try writeDoc(&buf, doc);
 
         var has_types = false;
         var has_fns = false;

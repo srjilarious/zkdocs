@@ -65,6 +65,9 @@ pub const Module = struct {
     /// Name of the module that directly imported this one, or null for roots.
     /// Heap-allocated; freed by deinitModule.
     parent_name: ?[]const u8 = null,
+    /// File-level `//!` doc comment, joined into a single string.
+    /// Heap-allocated; freed by deinitModule.
+    doc: ?[]const u8 = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -564,6 +567,34 @@ fn extractContainerSymbol(
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Collect consecutive `//!` container-doc-comment tokens from the start of
+/// the file. Strips the `//! ` (or `//!`) prefix and joins lines with `\n`.
+/// Returns null when no such tokens are present.
+fn collectContainerDocComment(
+    allocator: std.mem.Allocator,
+    tree: std.zig.Ast,
+) !?[]u8 {
+    var lines: std.ArrayList([]const u8) = .{};
+    defer lines.deinit(allocator);
+
+    var i: std.zig.Ast.TokenIndex = 0;
+    while (i < tree.tokens.len and
+        tree.tokenTag(i) == .container_doc_comment) : (i += 1)
+    {
+        const raw = tree.tokenSlice(i); // "//! text" or "//!"
+        const stripped: []const u8 = if (std.mem.startsWith(u8, raw, "//! "))
+            raw[4..]
+        else if (std.mem.startsWith(u8, raw, "//!"))
+            raw[3..]
+        else
+            raw;
+        try lines.append(allocator, stripped);
+    }
+
+    if (lines.items.len == 0) return null;
+    return try std.mem.join(allocator, "\n", lines.items);
+}
+
 /// Parse a single Zig source tree into a Module.
 /// Both `module_name` and `file_path` are duped; the caller retains ownership
 /// of the originals.
@@ -573,10 +604,14 @@ pub fn extractModule(
     module_name: []const u8,
     file_path: []const u8,
 ) !Module {
+    const module_doc = try collectContainerDocComment(allocator, tree.*);
+    errdefer if (module_doc) |d| allocator.free(d);
+
     var module: Module = .{
         .name = try allocator.dupe(u8, module_name),
         .path = try allocator.dupe(u8, file_path),
         .symbols = .{},
+        .doc = module_doc,
     };
     errdefer {
         allocator.free(module.name);
@@ -661,6 +696,7 @@ pub fn deinitModule(allocator: std.mem.Allocator, module: *Module) void {
     allocator.free(module.name);
     allocator.free(module.path);
     if (module.parent_name) |pn| allocator.free(pn);
+    if (module.doc) |d| allocator.free(d);
     for (module.symbols.items) |*sym| deinitSymbol(allocator, sym);
     module.symbols.deinit(allocator);
 }
