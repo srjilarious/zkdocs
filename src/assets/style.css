@@ -3,12 +3,12 @@
   --sidebar-w: 260px;
   --toc-w:     260px;
   --accent:    #f7a41d;
-  --bg:        #1b1b2e;
-  --bg-card:   rgba(255,255,255,.04);
-  --bg-sidebar:#13131f;
-  --text:      #d0d0e0;
-  --muted:     #7a7a9a;
-  --border:    #2c2c45;
+  --bg:        #0d0d1a;
+  --bg-card:   rgba(255,255,255,.05);
+  --bg-sidebar:#080810;
+  --text:      #dcdcf0;
+  --muted:     #8a8aaa;
+  --border:    #1e1e38;
   --fn:        #82aaff;
   --kw:        #c792ea;
   --type:      #f07178;
@@ -575,12 +575,12 @@ pre:hover .copy-btn { opacity: 1; }
    ─────────────────────────────────────────────── */
 [data-theme="monokai"] {
   --accent:    #a6e22e;
-  --bg:        #272822;
+  --bg:        #171812;
   --bg-card:   rgba(255,255,255,.06);
-  --bg-sidebar:#1e1f1c;
+  --bg-sidebar:#0f100a;
   --text:      #f8f8f2;
-  --muted:     #75715e;
-  --border:    #3e3d32;
+  --muted:     #857e68;
+  --border:    #2e2d24;
   --fn:        #a6e22e;
   --kw:        #f92672;
   --type:      #66d9ef;
@@ -636,12 +636,12 @@ pre:hover .copy-btn { opacity: 1; }
    ─────────────────────────────────────────────── */
 [data-theme="vscode-dark"] {
   --accent:    #4ec9b0;
-  --bg:        #1e1e1e;
-  --bg-card:   rgba(255,255,255,.04);
-  --bg-sidebar:#252526;
-  --text:      #d4d4d4;
-  --muted:     #858585;
-  --border:    #3c3c3c;
+  --bg:        #111111;
+  --bg-card:   rgba(255,255,255,.05);
+  --bg-sidebar:#181818;
+  --text:      #e0e0e0;
+  --muted:     #9a9a9a;
+  --border:    #2a2a2a;
   --fn:        #dcdcaa;
   --kw:        #569cd6;
   --type:      #4ec9b0;

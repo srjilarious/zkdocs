@@ -262,11 +262,107 @@ fn firstSentence(text: []const u8) []const u8 {
     return text;
 }
 
+/// Rewrite inline `<code>Identifier</code>` spans in rendered doc HTML to
+/// links when the identifier names a known symbol.  Spans inside `<pre>` are
+/// left untouched so fenced code examples are never turned into links.
+fn linkCodeSymbols(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    type_index: *const TypeIndex,
+    current_module: []const u8,
+) ![]const u8 {
+    const open_code  = "<code>";
+    const close_code = "</code>";
+    const open_pre   = "<pre";
+    const close_pre  = "</pre>";
+
+    var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
+
+    var rest = html;
+    while (rest.len > 0) {
+        const pre_pos  = std.mem.indexOf(u8, rest, open_pre);
+        const code_pos = std.mem.indexOf(u8, rest, open_code);
+
+        // No more <code> spans at all — flush and stop.
+        if (code_pos == null) {
+            try out.appendSlice(allocator, rest);
+            break;
+        }
+
+        // A <pre> appears before the next <code> — copy through to </pre>.
+        if (pre_pos != null and pre_pos.? < code_pos.?) {
+            try out.appendSlice(allocator, rest[0..pre_pos.?]);
+            const tail = rest[pre_pos.?..];
+            const end = (std.mem.indexOf(u8, tail, close_pre) orelse tail.len - close_pre.len) +
+                close_pre.len;
+            try out.appendSlice(allocator, tail[0..end]);
+            rest = tail[end..];
+            continue;
+        }
+
+        // Emit everything before the <code>.
+        try out.appendSlice(allocator, rest[0..code_pos.?]);
+        const after_open = rest[code_pos.? + open_code.len..];
+
+        const close_pos = std.mem.indexOf(u8, after_open, close_code) orelse {
+            // Malformed — emit the open tag literally and keep scanning.
+            try out.appendSlice(allocator, open_code);
+            rest = after_open;
+            continue;
+        };
+
+        const content = after_open[0..close_pos];
+
+        // Check whether content is a plain identifier (no spaces, no HTML).
+        const is_ident = blk: {
+            if (content.len == 0) break :blk false;
+            for (content, 0..) |c, i| {
+                if (c == '_' or std.ascii.isAlphabetic(c)) continue;
+                if (i > 0 and std.ascii.isDigit(c)) continue;
+                break :blk false;
+            }
+            break :blk true;
+        };
+
+        if (is_ident) {
+            if (type_index.get(content)) |ref| {
+                if (std.mem.eql(u8, ref.module_name, current_module)) {
+                    try out.writer(allocator).print(
+                        "<a href=\"#sym-{s}\" class=\"type-link\"><code>{s}</code></a>",
+                        .{ ref.anchor_name, content },
+                    );
+                } else {
+                    try out.writer(allocator).print(
+                        "<a href=\"{s}.html#sym-{s}\" class=\"type-link\"><code>{s}</code></a>",
+                        .{ ref.module_name, ref.anchor_name, content },
+                    );
+                }
+                rest = after_open[close_pos + close_code.len..];
+                continue;
+            }
+        }
+
+        // Unknown identifier or not a symbol — emit verbatim.
+        try out.appendSlice(allocator, open_code);
+        try out.appendSlice(allocator, content);
+        try out.appendSlice(allocator, close_code);
+        rest = after_open[close_pos + close_code.len..];
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
 fn writeDoc(buf: *Buf, doc: []const u8) !void {
     const raw = try markdown.toHtml(buf.alloc, doc);
     defer buf.alloc.free(raw);
-    const html = try emoji.replaceInHtml(buf.alloc, raw, buf.emoji_provider);
-    defer buf.alloc.free(html);
+    const with_emoji = try emoji.replaceInHtml(buf.alloc, raw, buf.emoji_provider);
+    defer buf.alloc.free(with_emoji);
+    const html: []const u8 = if (buf.type_index) |idx| blk: {
+        const linked = try linkCodeSymbols(buf.alloc, with_emoji, idx, buf.current_module);
+        break :blk linked;
+    } else with_emoji;
+    defer if (buf.type_index != null) buf.alloc.free(html);
     try buf.writeAll("<div class=\"symbol-doc\">");
     try buf.writeAll(html);
     try buf.writeAll("</div>\n");
