@@ -568,31 +568,48 @@ fn extractContainerSymbol(
 // ---------------------------------------------------------------------------
 
 /// Collect consecutive `//!` container-doc-comment tokens from the start of
-/// the file. Strips the `//! ` (or `//!`) prefix and joins lines with `\n`.
+/// the file. Strips the `//! ` (or `//!`) prefix and joins using the same
+/// rules as collectDocComment: regular lines join with a space (soft-wrap),
+/// blank `//!` lines produce a paragraph break, code fences are preserved.
 /// Returns null when no such tokens are present.
 fn collectContainerDocComment(
     allocator: std.mem.Allocator,
     tree: std.zig.Ast,
 ) !?[]u8 {
-    var lines: std.ArrayList([]const u8) = .{};
-    defer lines.deinit(allocator);
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(allocator);
 
+    var inCodeBlock = false;
+    var found = false;
     var i: std.zig.Ast.TokenIndex = 0;
     while (i < tree.tokens.len and
         tree.tokenTag(i) == .container_doc_comment) : (i += 1)
     {
-        const raw = tree.tokenSlice(i); // "//! text" or "//!"
-        const stripped: []const u8 = if (std.mem.startsWith(u8, raw, "//! "))
+        found = true;
+        const raw = tree.tokenSlice(i);
+        const text: []const u8 = if (std.mem.startsWith(u8, raw, "//! "))
             raw[4..]
         else if (std.mem.startsWith(u8, raw, "//!"))
             raw[3..]
         else
             raw;
-        try lines.append(allocator, stripped);
+
+        if (std.mem.indexOf(u8, text, "```") != null) inCodeBlock = !inCodeBlock;
+
+        if (buf.items.len > 0) {
+            if (inCodeBlock) {
+                try buf.append(allocator, '\n');
+            } else if (text.len == 0) {
+                try buf.append(allocator, '\n');
+            } else {
+                try buf.append(allocator, ' ');
+            }
+        }
+        try buf.appendSlice(allocator, text);
     }
 
-    if (lines.items.len == 0) return null;
-    return try std.mem.join(allocator, "\n", lines.items);
+    if (!found) return null;
+    return try buf.toOwnedSlice(allocator);
 }
 
 /// Parse a single Zig source tree into a Module.
