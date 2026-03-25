@@ -27,6 +27,24 @@ body {
   min-height: 100vh;
 }
 
+/* ── Scrollbar theming (sidebars only) ── */
+nav.sidebar,
+aside.page-toc {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--bg-sidebar);
+}
+nav.sidebar::-webkit-scrollbar,
+aside.page-toc::-webkit-scrollbar { width: 6px; }
+nav.sidebar::-webkit-scrollbar-track,
+aside.page-toc::-webkit-scrollbar-track { background: var(--bg-sidebar); }
+nav.sidebar::-webkit-scrollbar-thumb,
+aside.page-toc::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+nav.sidebar::-webkit-scrollbar-thumb:hover,
+aside.page-toc::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
 /* ── Sidebar ── */
 nav.sidebar {
   width: var(--sidebar-w);
