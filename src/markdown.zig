@@ -414,20 +414,28 @@ fn rootFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
 }
 
 // Inline code: plain <code> element.
+// node.content is already HTML-escaped by zmd, so use it as-is.
 fn codeFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
     return std.fmt.allocPrint(allocator, "<code>{s}</code>", .{node.content});
 }
 
 // Fenced code blocks: Zig blocks get tree-sitter syntax highlighting.
 fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
+    // zmd HTML-escapes node.content for code/block nodes before handing it to
+    // the formatter.  For the non-highlighted fallback paths we can use it
+    // as-is, but the highlighter needs the raw source so it can do its own
+    // escaping. Unescape first, then re-escape via the highlighter.
+    const raw = try htmlUnescapeBasic(allocator, node.content);
+    defer allocator.free(raw);
+
     // zmd strips leading whitespace from code block content via std.mem.trim,
     // which eats the first line's indentation along with the opening newline.
     // Restore it by detecting the indent used by the first non-blank subsequent line.
-    const content = try restoreCodeIndent(allocator, node.content);
-    defer allocator.free(content);
+    const raw_indented = try restoreCodeIndent(allocator, raw);
+    defer allocator.free(raw_indented);
 
     if (node.meta) |lang| {
-        if (highlight.highlight(allocator, lang, content)) |hl| {
+        if (highlight.highlight(allocator, lang, raw_indented)) |hl| {
             defer allocator.free(hl);
             return std.fmt.allocPrint(
                 allocator,
@@ -435,13 +443,53 @@ fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
                 .{ lang, hl },
             );
         } else |_| {}
+        // Unknown language — re-escape the raw source ourselves.
+        var escaped: std.ArrayList(u8) = .{};
+        errdefer escaped.deinit(allocator);
+        try htmlEscapeInto(&escaped, allocator, raw_indented);
+        const escaped_str = try escaped.toOwnedSlice(allocator);
+        defer allocator.free(escaped_str);
         return std.fmt.allocPrint(
             allocator,
             "<pre><code class=\"language-{s}\">{s}</code></pre>\n",
-            .{ lang, content },
+            .{ lang, escaped_str },
         );
     }
-    return std.fmt.allocPrint(allocator, "<pre><code>{s}</code></pre>\n", .{content});
+    var escaped: std.ArrayList(u8) = .{};
+    errdefer escaped.deinit(allocator);
+    try htmlEscapeInto(&escaped, allocator, raw_indented);
+    const escaped_str = try escaped.toOwnedSlice(allocator);
+    defer allocator.free(escaped_str);
+    return std.fmt.allocPrint(allocator, "<pre><code>{s}</code></pre>\n", .{escaped_str});
+}
+
+/// Reverse the minimal HTML escaping that zmd applies to code/block content:
+/// &amp; → &,  &lt; → <,  &gt; → >.
+fn htmlUnescapeBasic(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '&') {
+            if (std.mem.startsWith(u8, s[i..], "&amp;")) {
+                try out.append(allocator, '&');
+                i += 5;
+            } else if (std.mem.startsWith(u8, s[i..], "&lt;")) {
+                try out.append(allocator, '<');
+                i += 4;
+            } else if (std.mem.startsWith(u8, s[i..], "&gt;")) {
+                try out.append(allocator, '>');
+                i += 4;
+            } else {
+                try out.append(allocator, s[i]);
+                i += 1;
+            }
+        } else {
+            try out.append(allocator, s[i]);
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 /// zmd's `strip()` (std.mem.trim) removes the opening `\n` after the fence line
