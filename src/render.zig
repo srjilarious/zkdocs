@@ -314,18 +314,21 @@ fn linkCodeSymbols(
 
         const content = after_open[0..close_pos];
 
-        // Check whether content is a plain identifier (no spaces, no HTML).
-        const is_ident = blk: {
-            if (content.len == 0) break :blk false;
-            for (content, 0..) |c, i| {
-                if (c == '_' or std.ascii.isAlphabetic(c)) continue;
-                if (i > 0 and std.ascii.isDigit(c)) continue;
-                break :blk false;
+        // Returns true when `s` is a valid Zig identifier.
+        const isIdent = struct {
+            fn f(s: []const u8) bool {
+                if (s.len == 0) return false;
+                for (s, 0..) |c, i| {
+                    if (c == '_' or std.ascii.isAlphabetic(c)) continue;
+                    if (i > 0 and std.ascii.isDigit(c)) return false;
+                    if (i == 0) return false;
+                }
+                return true;
             }
-            break :blk true;
-        };
+        }.f;
 
-        if (is_ident) {
+        // ── Plain type/generic name: `Point`, `Stack` ────────────────────────
+        if (isIdent(content)) {
             if (type_index.get(content)) |ref| {
                 if (std.mem.eql(u8, ref.module_name, current_module)) {
                     try out.writer(allocator).print(
@@ -343,7 +346,33 @@ fn linkCodeSymbols(
             }
         }
 
-        // Unknown identifier or not a symbol — emit verbatim.
+        // ── Type.method (or Generic.method): `EventBus.subscribe` ────────────
+        if (std.mem.indexOfScalar(u8, content, '.')) |dot| {
+            const lhs = content[0..dot];
+            const rhs = content[dot + 1..];
+            // Require exactly one dot and both sides to be valid identifiers.
+            if (isIdent(lhs) and isIdent(rhs) and
+                std.mem.indexOfScalar(u8, rhs, '.') == null)
+            {
+                if (type_index.get(lhs)) |ref| {
+                    if (std.mem.eql(u8, ref.module_name, current_module)) {
+                        try out.writer(allocator).print(
+                            "<a href=\"#sym-{s}-{s}\" class=\"type-link\"><code>{s}</code></a>",
+                            .{ lhs, rhs, content },
+                        );
+                    } else {
+                        try out.writer(allocator).print(
+                            "<a href=\"{s}.html#sym-{s}-{s}\" class=\"type-link\"><code>{s}</code></a>",
+                            .{ ref.module_name, lhs, rhs, content },
+                        );
+                    }
+                    rest = after_open[close_pos + close_code.len..];
+                    continue;
+                }
+            }
+        }
+
+        // Unknown — emit verbatim.
         try out.appendSlice(allocator, open_code);
         try out.appendSlice(allocator, content);
         try out.appendSlice(allocator, close_code);
