@@ -3,6 +3,7 @@ pub const symbols = @import("symbols");
 pub const render = @import("render");
 const zargs = @import("zargunaught");
 pub const emoji = @import("emoji");
+const cache_mod = @import("cache");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -85,6 +86,17 @@ pub fn main() !void {
             @as(usize, if (has_guides) 1 else 0);
         var progress = render.Progress.init(total_steps);
 
+        // Load the incremental build cache (returns empty cache on first run).
+        var build_cache = cache_mod.Cache.load(allocator, out_path);
+        defer build_cache.deinit();
+
+        // Resolve the conf file path to absolute for stable cache keys.
+        const conf_abs_path: ?[]const u8 = if (args.optionVal("conf")) |cp|
+            cache_mod.absPath(allocator, cp) catch null
+        else
+            null;
+        defer if (conf_abs_path) |p| allocator.free(p);
+
         const modules: []symbols.Module = if (root_path) |rp| blk: {
             progress.begin("extracting symbols");
             break :blk try symbols.extractModuleGraph(allocator, rp);
@@ -93,7 +105,7 @@ pub fn main() !void {
 
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
-        try render.renderSite(allocator, out_path, project_name, modules, guides, emoji_provider, theme, &progress, conf_dir, home_slug);
+        try render.renderSite(allocator, out_path, project_name, modules, guides, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(allocator, rp)

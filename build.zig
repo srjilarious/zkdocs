@@ -32,6 +32,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/symbols.zig"),
     });
 
+    const cache_mod = b.addModule("cache", .{
+        .root_source_file = b.path("src/cache.zig"),
+    });
+
     const emoji_mod = b.addModule("emoji", .{
         .root_source_file = b.path("src/emoji.zig"),
     });
@@ -76,6 +80,7 @@ pub fn build(b: *std.Build) void {
     render_mod.addImport("symbols", symbols_mod);
     render_mod.addImport("markdown", markdown_mod);
     render_mod.addImport("emoji", emoji_mod);
+    render_mod.addImport("cache", cache_mod);
 
     const exe = b.addExecutable(.{
         .name = "zkdocs",
@@ -88,6 +93,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("symbols", symbols_mod);
     exe.root_module.addImport("render", render_mod);
     exe.root_module.addImport("emoji", emoji_mod);
+    exe.root_module.addImport("cache", cache_mod);
     exe.root_module.addImport("zargunaught", zargunaught_dep.module("zargunaught"));
 
     b.installArtifact(exe);

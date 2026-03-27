@@ -60,7 +60,10 @@ pub const Symbol = struct {
 
 pub const Module = struct {
     name: []const u8,
+    /// Display path shown in the generated HTML (relative to the root source dir).
     path: []const u8,
+    /// Absolute filesystem path; used for build-cache mtime tracking.
+    abs_path: []const u8,
     symbols: std.ArrayListUnmanaged(Symbol),
     /// Name of the module that directly imported this one, or null for roots.
     /// Heap-allocated; freed by deinitModule.
@@ -613,13 +616,14 @@ fn collectContainerDocComment(
 }
 
 /// Parse a single Zig source tree into a Module.
-/// Both `module_name` and `file_path` are duped; the caller retains ownership
-/// of the originals.
+/// `module_name`, `file_path`, and `abs_file_path` are all duped; the caller
+/// retains ownership of the originals.
 pub fn extractModule(
     allocator: std.mem.Allocator,
     tree: *const std.zig.Ast,
     module_name: []const u8,
     file_path: []const u8,
+    abs_file_path: []const u8,
 ) !Module {
     const module_doc = try collectContainerDocComment(allocator, tree.*);
     errdefer if (module_doc) |d| allocator.free(d);
@@ -627,6 +631,7 @@ pub fn extractModule(
     var module: Module = .{
         .name = try allocator.dupe(u8, module_name),
         .path = try allocator.dupe(u8, file_path),
+        .abs_path = try allocator.dupe(u8, abs_file_path),
         .symbols = .{},
         .doc = module_doc,
     };
@@ -712,6 +717,7 @@ pub fn extractModule(
 pub fn deinitModule(allocator: std.mem.Allocator, module: *Module) void {
     allocator.free(module.name);
     allocator.free(module.path);
+    allocator.free(module.abs_path);
     if (module.parent_name) |pn| allocator.free(pn);
     if (module.doc) |d| allocator.free(d);
     for (module.symbols.items) |*sym| deinitSymbol(allocator, sym);
@@ -794,7 +800,7 @@ fn extractModuleGraphRecurse(
     else
         abs_path; // fallback: show absolute path if outside root tree
 
-    var module = try extractModule(allocator, &tree, module_name, rel_path);
+    var module = try extractModule(allocator, &tree, module_name, rel_path, abs_path);
     errdefer deinitModule(allocator, &module);
     module.parent_name = if (parent_name) |pn| try allocator.dupe(u8, pn) else null;
     try modules.append(allocator, module);

@@ -2,6 +2,7 @@ const std = @import("std");
 const symbols = @import("symbols");
 pub const markdown = @import("markdown");
 const emoji = @import("emoji");
+pub const cache_mod = @import("cache");
 
 const CSS          = @embedFile("assets/style.css");
 const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
@@ -74,6 +75,9 @@ pub const GuideEntry = struct {
     slug: []const u8, // URL path, e.g. "getting-started" or "reference/cli"
     title: []const u8,
     content: []const u8,
+    /// Absolute path to the source .md file; used for cache mtime checks.
+    /// Empty string when the entry was not loaded from a file.
+    src_path: []const u8,
 };
 
 pub const GuideSection = struct {
@@ -91,6 +95,7 @@ fn freeGuideEntry(allocator: std.mem.Allocator, e: *GuideEntry) void {
     allocator.free(e.slug);
     allocator.free(e.title);
     allocator.free(e.content);
+    if (e.src_path.len > 0) allocator.free(e.src_path);
 }
 
 fn freeNavItem(allocator: std.mem.Allocator, item: *GuideNavItem) void {
@@ -887,6 +892,10 @@ fn loadGuideEntry(
     const full_path = try std.fs.path.join(allocator, &.{ config_dir, src });
     defer allocator.free(full_path);
 
+    // Resolve to absolute path for cache mtime tracking.
+    const src_path = cache_mod.absPath(allocator, full_path) catch try allocator.dupe(u8, full_path);
+    errdefer allocator.free(src_path);
+
     const content = try std.fs.cwd().readFileAlloc(allocator, full_path, 4 * 1024 * 1024);
     errdefer allocator.free(content);
 
@@ -903,7 +912,7 @@ fn loadGuideEntry(
         try allocator.dupe(u8, extractTitle(content, stem));
     errdefer allocator.free(title);
 
-    return .{ .slug = slug, .title = title, .content = content };
+    return .{ .slug = slug, .title = title, .content = content, .src_path = src_path };
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,9 +1268,27 @@ pub fn renderSite(
     /// Slug of the guide to render as `index.html`. When set the default module
     /// listing is replaced by that guide's content.
     home_slug: ?[]const u8,
+    /// Mutable build cache used to skip unchanged outputs.  The caller owns
+    /// the cache and must call `cache.save` (or discard) after this returns.
+    cache: *cache_mod.Cache,
+    /// Absolute path to the zkdocs.conf file, or null when running without one.
+    /// Used to record the conf mtime in the cache.
+    conf_abs_path: ?[]const u8,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
     defer out_dir.close();
+
+    // ── Determine what changed since the last run ────────────────────────────
+    const conf_changed = if (conf_abs_path) |cp|
+        !cache.confUnchanged(cp)
+    else
+        false;
+
+    // Check whether any source file has changed since the last run.
+    var sources_changed = conf_changed;
+    for (mods) |mod| {
+        if (!cache.sourceUnchanged(mod.abs_path)) sources_changed = true;
+    }
 
     try out_dir.makePath("api");
 
@@ -1292,7 +1319,11 @@ pub fn renderSite(
     defer type_index.deinit();
 
     // ── index.html ──────────────────────────────────────────────────────────
-    progress.begin("writing index");
+    if (!conf_changed and !sources_changed) {
+        progress.begin("index up to date");
+    } else {
+        progress.begin("writing index");
+    }
 
     // Find the home guide entry if one is designated.
     const home_entry: ?GuideEntry = blk: {
@@ -1306,6 +1337,7 @@ pub fn renderSite(
         break :blk null;
     };
 
+    if (conf_changed or sources_changed) {
     if (home_entry) |he| {
         // Render the designated guide as index.html.
         try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, true);
@@ -1385,93 +1417,99 @@ pub fn renderSite(
         defer file.close();
         try buf.flush(file);
     } // end else (no home guide)
+    } // end if (conf_changed or sources_changed)
 
     // ── api/<module>.html ────────────────────────────────────────────────────
     {
         var label_buf: [64]u8 = undefined;
-        const label = std.fmt.bufPrint(&label_buf, "rendering api ({d} module{s})", .{
-            mods.len, if (mods.len == 1) "" else "s",
-        }) catch "rendering api";
+        const label = if (!sources_changed)
+            "api pages up to date"
+        else
+            std.fmt.bufPrint(&label_buf, "rendering api ({d} module{s})", .{
+                mods.len, if (mods.len == 1) "" else "s",
+            }) catch "rendering api";
         progress.begin(label);
     }
-    for (mods) |mod| {
-        Progress.setCurrent(mod.name);
-        var buf = Buf.init(allocator, emoji_provider, theme);
-        defer buf.deinit();
-        buf.type_index = &type_index;
-        buf.current_module = mod.name;
+    if (sources_changed) {
+        for (mods) |mod| {
+            Progress.setCurrent(mod.name);
+            var buf = Buf.init(allocator, emoji_provider, theme);
+            defer buf.deinit();
+            buf.type_index = &type_index;
+            buf.current_module = mod.name;
 
-        const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
-        defer allocator.free(title);
+            const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
+            defer allocator.free(title);
 
-        try writeHeader(&buf, title, project_name, mods, guides, mod.name, null, "..");
+            try writeHeader(&buf, title, project_name, mods, guides, mod.name, null, "..");
 
-        try buf.writeAll("<h1>");
-        try htmlEscape(&buf, mod.name);
-        try buf.writeAll("</h1>\n<div class=\"mod-path\">");
-        try htmlEscape(&buf, mod.path);
-        try buf.writeAll("</div>\n");
-        if (mod.doc) |doc| try writeDoc(&buf, doc);
+            try buf.writeAll("<h1>");
+            try htmlEscape(&buf, mod.name);
+            try buf.writeAll("</h1>\n<div class=\"mod-path\">");
+            try htmlEscape(&buf, mod.path);
+            try buf.writeAll("</div>\n");
+            if (mod.doc) |doc| try writeDoc(&buf, doc);
 
-        var has_types = false;
-        var has_fns = false;
-        var has_consts = false;
-        for (mod.symbols.items) |sym| {
-            switch (sym.kind) {
-                .container => if (sym.container) |c| {
-                    if (c.is_pub) has_types = true;
-                },
-                .function => if (sym.function) |f| {
-                    if (f.is_pub and f.generic_return != null) has_types = true;
-                    if (f.is_pub and f.generic_return == null) has_fns = true;
-                },
-                .variable => if (sym.variable) |v| {
-                    if (v.is_pub) has_consts = true;
-                },
-                else => {},
-            }
-        }
-
-        if (has_types) {
-            try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
+            var has_types = false;
+            var has_fns = false;
+            var has_consts = false;
             for (mod.symbols.items) |sym| {
-                if (sym.kind == .container) if (sym.container) |c| {
-                    if (c.is_pub) try renderContainer(&buf, c);
-                };
+                switch (sym.kind) {
+                    .container => if (sym.container) |c| {
+                        if (c.is_pub) has_types = true;
+                    },
+                    .function => if (sym.function) |f| {
+                        if (f.is_pub and f.generic_return != null) has_types = true;
+                        if (f.is_pub and f.generic_return == null) has_fns = true;
+                    },
+                    .variable => if (sym.variable) |v| {
+                        if (v.is_pub) has_consts = true;
+                    },
+                    else => {},
+                }
             }
-            for (mod.symbols.items) |sym| {
-                if (sym.kind != .function) continue;
-                const f = sym.function orelse continue;
-                if (f.is_pub and f.generic_return != null) try renderFn(&buf, f, null);
-            }
-        }
-        if (has_fns) {
-            try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
-            for (mod.symbols.items) |sym| {
-                if (sym.kind == .function) if (sym.function) |f| {
-                    if (f.is_pub and f.generic_return == null) try renderFn(&buf, f, null);
-                };
-            }
-        }
-        if (has_consts) {
-            try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
-            for (mod.symbols.items) |sym| {
-                if (sym.kind == .variable) if (sym.variable) |v| {
-                    if (v.is_pub) try renderVar(&buf, v);
-                };
-            }
-        }
 
-        try writeApiToc(&buf, mod);
-        try writeFooter(&buf);
+            if (has_types) {
+                try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
+                for (mod.symbols.items) |sym| {
+                    if (sym.kind == .container) if (sym.container) |c| {
+                        if (c.is_pub) try renderContainer(&buf, c);
+                    };
+                }
+                for (mod.symbols.items) |sym| {
+                    if (sym.kind != .function) continue;
+                    const f = sym.function orelse continue;
+                    if (f.is_pub and f.generic_return != null) try renderFn(&buf, f, null);
+                }
+            }
+            if (has_fns) {
+                try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
+                for (mod.symbols.items) |sym| {
+                    if (sym.kind == .function) if (sym.function) |f| {
+                        if (f.is_pub and f.generic_return == null) try renderFn(&buf, f, null);
+                    };
+                }
+            }
+            if (has_consts) {
+                try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
+                for (mod.symbols.items) |sym| {
+                    if (sym.kind == .variable) if (sym.variable) |v| {
+                        if (v.is_pub) try renderVar(&buf, v);
+                    };
+                }
+            }
 
-        const filename = try std.fmt.allocPrint(allocator, "api/{s}.html", .{mod.name});
-        defer allocator.free(filename);
-        const file = try out_dir.createFile(filename, .{});
-        defer file.close();
-        try buf.flush(file);
+            try writeApiToc(&buf, mod);
+            try writeFooter(&buf);
+
+            const filename = try std.fmt.allocPrint(allocator, "api/{s}.html", .{mod.name});
+            defer allocator.free(filename);
+            const file = try out_dir.createFile(filename, .{});
+            defer file.close();
+            try buf.flush(file);
+        }
+        if (mods.len > 0) Progress.endFiles();
     }
-    if (mods.len > 0) Progress.endFiles();
 
     // ── guide pages ──────────────────────────────────────────────────────────
     if (guidesHaveEntries(guides)) {
@@ -1489,17 +1527,35 @@ pub fn renderSite(
         for (guides) |item| switch (item) {
             .entry => |e| {
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
+                // Skip if the guide source and conf are both unchanged.
+                if (!conf_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
+                    continue;
                 Progress.setCurrent(e.slug);
                 try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false);
             },
             .section => |s| for (s.entries) |e| {
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
+                if (!conf_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
+                    continue;
                 Progress.setCurrent(e.slug);
                 try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false);
             },
         };
         Progress.endFiles();
     }
+
+    // ── Update and save build cache ──────────────────────────────────────────
+    if (conf_abs_path) |cp| cache.recordConf(cp) catch {};
+    for (mods) |mod| cache.recordSource(mod.abs_path) catch {};
+    for (guides) |item| switch (item) {
+        .entry => |e| { if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {}; },
+        .section => |s| for (s.entries) |e| {
+            if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {};
+        },
+    };
+    cache.save(out_path) catch |err| {
+        std.debug.print("  warning: could not write build cache: {}\n", .{err});
+    };
 }
 
 // ---------------------------------------------------------------------------
