@@ -27,7 +27,7 @@ body {
   min-height: 100vh;
 }
 
-/* ── Scrollbar theming (sidebars only) ── */
+/* ── Scrollbar theming ── */
 nav.sidebar,
 aside.page-toc {
   scrollbar-width: thin;
@@ -44,6 +44,24 @@ aside.page-toc::-webkit-scrollbar-thumb {
 }
 nav.sidebar::-webkit-scrollbar-thumb:hover,
 aside.page-toc::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* Horizontal scrollbars on code blocks */
+.symbol-doc pre,
+.guide-content pre {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.symbol-doc pre::-webkit-scrollbar,
+.guide-content pre::-webkit-scrollbar { height: 6px; }
+.symbol-doc pre::-webkit-scrollbar-track,
+.guide-content pre::-webkit-scrollbar-track { background: transparent; }
+.symbol-doc pre::-webkit-scrollbar-thumb,
+.guide-content pre::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.symbol-doc pre::-webkit-scrollbar-thumb:hover,
+.guide-content pre::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* ── Sidebar ── */
 nav.sidebar {
