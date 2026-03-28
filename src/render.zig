@@ -1437,6 +1437,7 @@ pub fn renderSite(
             defer buf.deinit();
             buf.type_index = &type_index;
             buf.current_module = mod.name;
+            buf.home_slug = home_slug;
 
             const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
             defer allocator.free(title);
