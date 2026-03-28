@@ -115,6 +115,7 @@ pub fn build(b: *std.Build) void {
     tests_exe.root_module.addImport("symbols", symbols_mod);
 
     const tests_run = b.addRunArtifact(tests_exe);
+    if (b.args) |args| tests_run.addArgs(args);
     const tests_step = b.step("tests", "Run unit tests");
     tests_step.dependOn(&tests_run.step);
 

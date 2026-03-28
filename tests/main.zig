@@ -6,6 +6,13 @@ const symbols = @import("symbols");
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn findModule(mods: []const symbols.Module, name: []const u8) ?symbols.Module {
+    for (mods) |m| {
+        if (std.mem.eql(u8, m.name, name)) return m;
+    }
+    return null;
+}
+
 fn findSymbol(syms: []const symbols.Symbol, kind: symbols.SymbolKind, name: []const u8) ?symbols.Symbol {
     for (syms) |sym| {
         if (sym.kind != kind) continue;
@@ -33,8 +40,8 @@ const FunctionTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        try testz.expectTrue(mods.len > 0);
-        const sym = findSymbol(mods[0].symbols.items, .function, "add") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .function, "add") orelse {
             return error.SymbolNotFound;
         };
         const f = sym.function.?;
@@ -52,7 +59,8 @@ const FunctionTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .function, "privateHelper") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .function, "privateHelper") orelse {
             return error.SymbolNotFound;
         };
         try testz.expectTrue(!sym.function.?.is_pub);
@@ -72,7 +80,8 @@ const DocTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .function, "sub") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .function, "sub") orelse {
             return error.SymbolNotFound;
         };
         const doc = sym.function.?.doc orelse return error.NoDoc;
@@ -87,7 +96,8 @@ const DocTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .function, "add") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .function, "add") orelse {
             return error.SymbolNotFound;
         };
         const doc = sym.function.?.doc orelse return error.NoDoc;
@@ -103,7 +113,8 @@ const DocTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .function, "privateHelper") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .function, "privateHelper") orelse {
             return error.SymbolNotFound;
         };
         try testz.expectTrue(sym.function.?.doc == null);
@@ -123,7 +134,8 @@ const ContainerTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .container, "Point") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .container, "Point") orelse {
             return error.SymbolNotFound;
         };
         const c = sym.container.?;
@@ -142,7 +154,8 @@ const ContainerTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .container, "Point") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .container, "Point") orelse {
             return error.SymbolNotFound;
         };
         const c = sym.container.?;
@@ -170,7 +183,8 @@ const ContainerTests = struct {
         const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
         defer symbols.deinitModules(allocator, mods);
 
-        const sym = findSymbol(mods[0].symbols.items, .container, "Color") orelse {
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .container, "Color") orelse {
             return error.SymbolNotFound;
         };
         const c = sym.container.?;

@@ -1,14 +1,16 @@
 .{
     .name = .zkdocs,
-    .version = "0.1.0",
+    .version = "0.5.0",
     .fingerprint = 0x858a3df34daf0ee0,
     .paths = .{"."},
     .dependencies = .{
         .zargunaught = .{
-            .path = "../zargunaught",
+            .url = "https://github.com/srjilarious/zargunaught/archive/refs/tags/v1.1.0.tar.gz",
+            .hash = "zargunaught-1.1.0-aoeNI7vdAAAufpOIoCb_JZo0nl2CwJNMi2y0vLhpVNIz",
         },
         .testz = .{
-            .path = "../testz",
+            .url = "https://github.com/srjilarious/testz/archive/refs/tags/v1.1.0.tar.gz",
+            .hash = "testz-1.1.0-abaPyRr0CAD7nMXVE8c40UoSSUoeLQN_NQWoQjEivQ0T",
         },
         .zmd = .{
             .url = "https://github.com/jetzig-framework/zmd/archive/refs/heads/main.tar.gz",
@@ -22,6 +24,5 @@
             .url = "https://github.com/tree-sitter-grammars/tree-sitter-zig/archive/refs/heads/master.tar.gz",
             .hash = "tree_sitter_zig-1.1.2-AAAAAJ57XACsD_XBHC4i6G6rnCsZ1dZj7CLRTC09toEB",
         },
-
     },
 }
