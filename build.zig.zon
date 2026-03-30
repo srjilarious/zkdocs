@@ -12,10 +12,6 @@
             .url = "https://github.com/srjilarious/testz/archive/refs/tags/v1.1.0.tar.gz",
             .hash = "testz-1.1.0-abaPyRr0CAD7nMXVE8c40UoSSUoeLQN_NQWoQjEivQ0T",
         },
-        .zmd = .{
-            .url = "https://github.com/jetzig-framework/zmd/archive/refs/heads/main.tar.gz",
-            .hash = "zmd-0.1.0-H8YV7V_rAACiIbtOcECYvUcG-KawejQDI1nLR4Pi-fx7",
-        },
         .tree_sitter = .{
             .url = "https://github.com/tree-sitter/zig-tree-sitter/archive/refs/heads/master.tar.gz",
             .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",

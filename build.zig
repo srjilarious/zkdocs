@@ -11,7 +11,6 @@ pub fn build(b: *std.Build) void {
 
     const zargunaught_dep = b.dependency("zargunaught", .{});
     const testz_dep = b.dependency("testz", .{});
-    const zmd_dep = b.dependency("zmd", .{});
     const tree_sitter_dep = b.dependency("tree_sitter", .{
         .target = target,
         .optimize = optimize,
@@ -68,10 +67,14 @@ pub fn build(b: *std.Build) void {
     highlight_mod.addImport("tree-sitter-zig", tree_sitter_zig_dep.module("tree-sitter-zig"));
     highlight_mod.addImport("tree-sitter-json", json_grammar_mod);
 
+    const zmd_mod = b.addModule("zmd", .{
+        .root_source_file = b.path("src/zmd/zmd.zig"),
+    });
+
     const markdown_mod = b.addModule("markdown", .{
         .root_source_file = b.path("src/markdown.zig"),
     });
-    markdown_mod.addImport("zmd", zmd_dep.module("zmd"));
+    markdown_mod.addImport("zmd", zmd_mod);
     markdown_mod.addImport("highlight", highlight_mod);
 
     const render_mod = b.addModule("render", .{
