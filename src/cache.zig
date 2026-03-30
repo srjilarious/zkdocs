@@ -9,8 +9,9 @@ pub const CACHE_FILENAME = ".zkdocs-cache";
 /// File path → last-seen mtime in seconds since Unix epoch.
 const FileMap = std.StringHashMap(i64);
 
-/// Persistent build cache. Tracks mtimes of source files, guide files, and
-/// the conf file so that unchanged outputs can be skipped on the next run.
+/// Persistent build cache. Tracks mtimes of source files, guide files, asset
+/// files, and the conf file so that unchanged outputs can be skipped on the
+/// next run.
 ///
 /// All string keys in the maps are heap-allocated and owned by the Cache.
 /// Call `deinit` when done.
@@ -26,6 +27,8 @@ pub const Cache = struct {
     sources: FileMap,
     /// Absolute guide .md paths → mtime.
     guides: FileMap,
+    /// Absolute asset paths (images, etc.) → mtime.
+    assets: FileMap,
 
     pub fn init(allocator: std.mem.Allocator) Cache {
         return .{
@@ -34,6 +37,7 @@ pub const Cache = struct {
             .conf_mtime = 0,
             .sources = FileMap.init(allocator),
             .guides = FileMap.init(allocator),
+            .assets = FileMap.init(allocator),
         };
     }
 
@@ -41,6 +45,7 @@ pub const Cache = struct {
         if (self.conf_path) |p| self.allocator.free(p);
         freeMap(self.allocator, &self.sources);
         freeMap(self.allocator, &self.guides);
+        freeMap(self.allocator, &self.assets);
     }
 
     fn freeMap(allocator: std.mem.Allocator, map: *FileMap) void {
@@ -105,6 +110,16 @@ pub const Cache = struct {
             }
         };
 
+        if (obj.get("assets")) |av| if (av == .object) {
+            var it = av.object.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* != .integer) continue;
+                const key = try allocator.dupe(u8, entry.key_ptr.*);
+                errdefer allocator.free(key);
+                try cache.assets.put(key, entry.value_ptr.*.integer);
+            }
+        };
+
         return cache;
     }
 
@@ -145,6 +160,17 @@ pub const Cache = struct {
             try jsonWriteStr(w, e.key_ptr.*);
             try w.print(":{d}", .{e.value_ptr.*});
         }
+        try w.writeByte('}');
+
+        try w.writeAll(",\"assets\":{");
+        first = true;
+        var ait = self.assets.iterator();
+        while (ait.next()) |e| {
+            if (!first) try w.writeByte(',');
+            first = false;
+            try jsonWriteStr(w, e.key_ptr.*);
+            try w.print(":{d}", .{e.value_ptr.*});
+        }
         try w.writeAll("}}\n");
 
         // Atomic write: write to a temp file then rename into place.
@@ -170,6 +196,20 @@ pub const Cache = struct {
         return mapEntryUnchanged(&self.guides, abs_path);
     }
 
+    /// True if `abs_path` is in the assets map and its current mtime matches.
+    pub fn assetUnchanged(self: *const Cache, abs_path: []const u8) bool {
+        return mapEntryUnchanged(&self.assets, abs_path);
+    }
+
+    /// True if every tracked asset still matches its cached mtime.
+    pub fn allAssetsUnchanged(self: *const Cache) bool {
+        var it = self.assets.keyIterator();
+        while (it.next()) |k| {
+            if (!mapEntryUnchanged(&self.assets, k.*)) return false;
+        }
+        return true;
+    }
+
     /// True if the conf at `abs_path` matches the cached conf path and mtime.
     pub fn confUnchanged(self: *const Cache, abs_path: []const u8) bool {
         const cached_path = self.conf_path orelse return false;
@@ -192,6 +232,10 @@ pub const Cache = struct {
 
     pub fn recordGuide(self: *Cache, abs_path: []const u8) !void {
         try recordInMap(self.allocator, &self.guides, abs_path);
+    }
+
+    pub fn recordAsset(self: *Cache, abs_path: []const u8) !void {
+        try recordInMap(self.allocator, &self.assets, abs_path);
     }
 
     pub fn recordConf(self: *Cache, abs_path: []const u8) !void {

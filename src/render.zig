@@ -1284,8 +1284,11 @@ pub fn renderSite(
     else
         false;
 
+    // Check whether any asset file (e.g. logo image) changed since the last run.
+    const assets_changed = !cache.allAssetsUnchanged();
+
     // Check whether any source file has changed since the last run.
-    var sources_changed = conf_changed;
+    var sources_changed = conf_changed or assets_changed;
     for (mods) |mod| {
         if (!cache.sourceUnchanged(mod.abs_path)) sources_changed = true;
     }
@@ -1319,11 +1322,6 @@ pub fn renderSite(
     defer type_index.deinit();
 
     // ── index.html ──────────────────────────────────────────────────────────
-    if (!conf_changed and !sources_changed) {
-        progress.begin("index up to date");
-    } else {
-        progress.begin("writing index");
-    }
 
     // Find the home guide entry if one is designated.
     const home_entry: ?GuideEntry = blk: {
@@ -1337,10 +1335,21 @@ pub fn renderSite(
         break :blk null;
     };
 
-    if (conf_changed or sources_changed) {
+    const home_changed = if (home_entry) |he|
+        he.src_path.len > 0 and !cache.guideUnchanged(he.src_path)
+    else
+        false;
+
+    if (!conf_changed and !sources_changed and !home_changed) {
+        progress.begin("index up to date");
+    } else {
+        progress.begin("writing index");
+    }
+
+    if (conf_changed or sources_changed or home_changed) {
     if (home_entry) |he| {
         // Render the designated guide as index.html.
-        try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, true);
+        try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, true, cache);
     } else {
         var buf = Buf.init(allocator, emoji_provider, theme);
         defer buf.deinit();
@@ -1528,18 +1537,18 @@ pub fn renderSite(
         for (guides) |item| switch (item) {
             .entry => |e| {
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
-                // Skip if the guide source and conf are both unchanged.
-                if (!conf_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
+                // Skip if the guide source, conf, and assets are all unchanged.
+                if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
                     continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false, cache);
             },
             .section => |s| for (s.entries) |e| {
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
-                if (!conf_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
+                if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
                     continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false, cache);
             },
         };
         Progress.endFiles();
@@ -1730,11 +1739,13 @@ fn isRelativeUrl(url: []const u8) bool {
 
 /// Copy an image from `conf_dir/rel_path` into `out_dir/assets/rel_path`,
 /// creating intermediate directories as needed.
+/// Records the source asset path in `cache` so future runs can detect changes.
 fn copyImageFile(
     allocator: std.mem.Allocator,
     conf_dir: []const u8,
     rel_path: []const u8,
     out_dir: std.fs.Dir,
+    cache: *cache_mod.Cache,
 ) !void {
     const dest_rel = try std.fs.path.join(allocator, &.{ "assets", rel_path });
     defer allocator.free(dest_rel);
@@ -1747,6 +1758,10 @@ fn copyImageFile(
     defer allocator.free(src_path);
 
     try std.fs.cwd().copyFile(src_path, out_dir, dest_rel, .{});
+
+    const abs_src = cache_mod.absPath(allocator, src_path) catch try allocator.dupe(u8, src_path);
+    defer allocator.free(abs_src);
+    cache.recordAsset(abs_src) catch {};
 }
 
 /// Scan rendered HTML for `<img src="...">` elements; copy any relative-path
@@ -1757,6 +1772,7 @@ fn processImages(
     conf_dir: []const u8,
     out_dir: std.fs.Dir,
     prefix: []const u8,
+    cache: *cache_mod.Cache,
 ) ![]const u8 {
     const marker = "src=\"";
     var out: std.ArrayList(u8) = .{};
@@ -1780,7 +1796,7 @@ fn processImages(
 
         const src = after[0..close];
         if (isRelativeUrl(src)) {
-            copyImageFile(allocator, conf_dir, src, out_dir) catch |err| {
+            copyImageFile(allocator, conf_dir, src, out_dir, cache) catch |err| {
                 std.debug.print("Warning: could not copy image '{s}': {}\n", .{ src, err });
             };
             try out.writer(allocator).print("src=\"{s}/assets/{s}", .{ prefix, src });
@@ -1809,6 +1825,7 @@ fn renderGuidePage(
     home_slug: ?[]const u8,
     /// When true, output to `index.html` with prefix `.` instead of `guide/{slug}.html`.
     is_home: bool,
+    cache: *cache_mod.Cache,
 ) !void {
     var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
@@ -1831,7 +1848,7 @@ fn renderGuidePage(
     const with_emoji = try emoji.replaceInHtml(allocator, raw, emoji_provider);
     defer allocator.free(with_emoji);
     const with_images = if (conf_dir) |cd|
-        try processImages(allocator, with_emoji, cd, out_dir.*, prefix)
+        try processImages(allocator, with_emoji, cd, out_dir.*, prefix, cache)
     else
         try allocator.dupe(u8, with_emoji);
     defer allocator.free(with_images);

@@ -1,8 +1,8 @@
 # Getting Started
 
-zkdocs is a static documentation generator for Zig projects. It parses Zig
-source files, extracts doc comments, and emits a self-contained HTML site
-complete with syntax highlighting, emoji support, and hand-written guide pages.
+![logo](assets/logo.png)
+
+zkdocs is a static documentation generator for Zig projects. It parses Zig source files, extracts doc comments, and emits a self-contained HTML site complete with syntax highlighting, emoji support, and hand-written guide pages.
 
 ## Installation
 

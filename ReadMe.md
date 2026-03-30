@@ -1,6 +1,6 @@
 # Overview
 
-![Logo](images/zargunaught.png)
+![Logo](docs/asssets/logo.png)
 
 ![Version Badge](https://img.shields.io/badge/Version-0.5.0-brightgreen)
 ![Zig Version Badge](https://img.shields.io/badge/Zig%20Version-0.15.1-%23f7a41d?logo=zig)
