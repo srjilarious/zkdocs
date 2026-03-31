@@ -1650,7 +1650,7 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
 ///   `[text](sym:Container.method)` → method anchor (when first part is not a module)
 ///   `[text](mod:name)`             → module API page (`api/name.html`)
 ///   `[text](guide:slug)`           → another guide page (`guide/slug.html`)
-fn resolveInternalLinks(
+pub fn resolveInternalLinks(
     allocator: std.mem.Allocator,
     html: []const u8,
     mods: []const symbols.Module,
@@ -1722,6 +1722,24 @@ fn resolveInternalLinks(
         }
 
         rest = after[close..];
+
+        // For sym: links with no explicit link text, inject `<code>name</code>`
+        // so that `[](sym:Foo)` renders as [`Foo`](...) rather than a blank link.
+        if (std.mem.eql(u8, marker, "href=\"sym:")) {
+            if (std.mem.indexOf(u8, rest, ">")) |tag_end| {
+                const after_tag = rest[tag_end + 1 ..];
+                if (std.mem.startsWith(u8, after_tag, "</a>")) {
+                    const display_name = if (std.mem.lastIndexOfScalar(u8, target, '.')) |dot|
+                        target[dot + 1 ..]
+                    else
+                        target;
+                    try out.appendSlice(allocator, rest[0 .. tag_end + 1]);
+                    try out.writer(allocator).print("<code>{s}</code>", .{display_name});
+                    try out.appendSlice(allocator, "</a>");
+                    rest = after_tag[4..];
+                }
+            }
+        }
     }
 
     return out.toOwnedSlice(allocator);

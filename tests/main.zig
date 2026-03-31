@@ -2,6 +2,7 @@ const std = @import("std");
 const testz = @import("testz");
 const symbols = @import("symbols");
 const markdown = @import("markdown");
+const render = @import("render");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -324,6 +325,76 @@ const MarkdownTests = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Tests: render / sym link rewriting
+// ---------------------------------------------------------------------------
+
+const RenderTests = struct {
+    /// `[](sym:Foo)` with no link text should inject `<code>Foo</code>`.
+    pub fn emptySymLinkInjectsCodeName() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const html = try render.resolveInternalLinks(
+            allocator,
+            \\<a href="sym:MyStruct"></a>
+        , &.{}, ".");
+        defer allocator.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>MyStruct</code>") != null);
+    }
+
+    /// Qualified `[](sym:module.Foo)` should display only the last component.
+    pub fn emptySymLinkQualifiedUsesLastComponent() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const html = try render.resolveInternalLinks(
+            allocator,
+            \\<a href="sym:mymod.MyStruct"></a>
+        , &.{}, ".");
+        defer allocator.free(html);
+
+        // Display text should be the last component only, not the qualified name.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>MyStruct</code>") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>mymod.MyStruct</code>") == null);
+    }
+
+    /// `[](sym:Foo)` with empty brackets in raw markdown must parse as a link.
+    pub fn emptyBracketsSymLinkParsesFromMarkdown() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const html = try markdown.toHtml(allocator, "[](sym:PixzigEngineOptions)");
+        defer allocator.free(html);
+
+        // Must produce an <a> tag, not render as plain text.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<a ") != null or
+            std.mem.indexOf(u8, html, "<a>") != null);
+        // Must not appear as raw bracket text.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "[sym:") == null);
+    }
+
+    /// `[CustomText](sym:Foo)` already has link text — must not be altered.
+    pub fn nonEmptySymLinkPreservesText() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const html = try render.resolveInternalLinks(
+            allocator,
+            \\<a href="sym:MyStruct">CustomText</a>
+        , &.{}, ".");
+        defer allocator.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "CustomText") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>") == null);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Test runner
 // ---------------------------------------------------------------------------
 
@@ -333,6 +404,7 @@ const DiscoveredTests = testz.discoverTests(.{
     testz.Group{ .name = "Container Extraction", .tag = "containers", .mod = ContainerTests },
     testz.Group{ .name = "Import Following", .tag = "imports", .mod = ImportTests },
     testz.Group{ .name = "Markdown Rendering", .tag = "markdown", .mod = MarkdownTests },
+    testz.Group{ .name = "Render / Sym Links", .tag = "render", .mod = RenderTests },
 }, .{});
 
 pub fn main() !void {

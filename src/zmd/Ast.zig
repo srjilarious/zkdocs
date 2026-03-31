@@ -496,38 +496,59 @@ fn parseLink(
     index: usize,
     link_type: enum { image, link },
 ) void {
-    const expected_tokens = &[_]tokens.ElementType{
+    // Full form: text, title_close, href, text, href_close  → title = tokens[1], href = tokens[4]
+    const expected_full = &[_]tokens.ElementType{
         .text,
         .title_close,
         .href,
         .text,
         .href_close,
     };
-    if (index + expected_tokens.len + 1 >= self.tokens_list.items.len - 1)
-        return self.swapText(node, index);
+    // Empty-title form: title_close, href, text, href_close → title = "" , href = tokens[3]
+    const expected_empty = &[_]tokens.ElementType{
+        .title_close,
+        .href,
+        .text,
+        .href_close,
+    };
 
-    for (expected_tokens, index + 1..) |expected, offset|
-        if (self.tokens_list.items[offset].element.type != expected)
-            return self.swapText(node, index);
+    const full_match = blk: {
+        if (index + expected_full.len + 1 >= self.tokens_list.items.len) break :blk false;
+        for (expected_full, index + 1..) |expected, offset|
+            if (self.tokens_list.items[offset].element.type != expected) break :blk false;
+        break :blk true;
+    };
 
-    const start = node.token.start;
-    const end = self.tokens_list.items[index + expected_tokens.len + 1].end;
+    const empty_match = blk: {
+        if (index + expected_empty.len + 1 >= self.tokens_list.items.len) break :blk false;
+        for (expected_empty, index + 1..) |expected, offset|
+            if (self.tokens_list.items[offset].element.type != expected) break :blk false;
+        break :blk true;
+    };
+
+    if (!full_match and !empty_match) return self.swapText(node, index);
 
     const element_type: tokens.ElementType = switch (link_type) {
         .image => .image,
         .link => .link,
     };
 
-    node.token = .{
-        .element = .{ .type = element_type },
-        .start = start,
-        .end = end,
-    };
-    node.href = self.sliceOfInput(index + 4);
-    node.title = self.sliceOfInput(index + 1);
-
-    for (0..expected_tokens.len) |offset|
-        self.nullifyToken(index + offset);
+    if (full_match) {
+        const start = node.token.start;
+        const end = self.tokens_list.items[index + expected_full.len + 1].end;
+        node.token = .{ .element = .{ .type = element_type }, .start = start, .end = end };
+        node.href = self.sliceOfInput(index + 4);
+        node.title = self.sliceOfInput(index + 1);
+        for (0..expected_full.len) |offset| self.nullifyToken(index + offset);
+    } else {
+        // Empty title: no text token before title_close.
+        const start = node.token.start;
+        const end = self.tokens_list.items[index + expected_empty.len + 1].end;
+        node.token = .{ .element = .{ .type = element_type }, .start = start, .end = end };
+        node.href = self.sliceOfInput(index + 3);
+        node.title = "";
+        for (0..expected_empty.len) |offset| self.nullifyToken(index + offset);
+    }
 }
 
 fn sliceOfInput(self: *Ast, index: usize) ?[]const u8 {
