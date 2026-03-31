@@ -1,8 +1,6 @@
 # Site Configuration
 
-zkdocs is configured via a `zkdocs.conf` file — a JSON object that describes
-the project name, source files, color theme, emoji settings, and the
-hand-written guide pages to include alongside the auto-extracted API docs.
+zkdocs is configured via a `zkdocs.conf` file — a JSON object that describes the project name, source files, color theme, emoji settings, and the hand-written guide pages to include alongside the auto-extracted API docs.
 
 ## Config File Format
 
@@ -37,8 +35,7 @@ hand-written guide pages to include alongside the auto-extracted API docs.
 | `emoji`   | string           | Emoji provider: `"none"`, `"unicode"`, `"twemoji"`, `"noto"`, `"openmoji"`. |
 | `guides`  | array            | Ordered list of guide pages and sections (see below). |
 
-All fields are optional; any value not present falls back to the equivalent
-CLI flag, and then to the built-in default.
+All fields are optional; any value not present falls back to the equivalent CLI flag, and then to the built-in default.
 
 ## Color Themes
 
@@ -54,13 +51,11 @@ pink/red keywords, cyan types, and yellow strings.
 
 ### `vscode-light`
 
-Light theme matching VS Code's default light color scheme: white background,
-blue keywords, teal types, dark-gold function names, and red string literals.
+Light theme matching VS Code's default light color scheme: white background, blue keywords, teal types, dark-gold function names, and red string literals.
 
 ### `vscode-dark`
 
-Dark theme matching VS Code Dark+: charcoal background (`#1e1e1e`), blue
-keywords, teal types, gold function names, and orange/tan strings.
+Dark theme matching VS Code Dark+: charcoal background (`#1e1e1e`), blue keywords, teal types, gold function names, and orange/tan strings.
 
 ## Guides Array
 
@@ -73,10 +68,8 @@ Each element of `"guides"` is either a **top-level guide entry** or a
 { "title": "Page Title", "src": "relative/path.md" }
 ```
 
-- `title` — displayed in the sidebar and as the browser tab title. If omitted,
-  the first H1 heading in the Markdown file is used; if there is none, the
-  filename stem is used.
-- `src` — path to the Markdown source file, **relative to `zkdocs.conf`**.
+- `title` - displayed in the sidebar and as the browser tab title. If omitted, the first H1 heading in the Markdown file is used; if there is none, the filename stem is used.
+- `src` - path to the Markdown source file, **relative to `zkdocs.conf`**.
 
 ### Section
 
@@ -90,8 +83,7 @@ Each element of `"guides"` is either a **top-level guide entry** or a
 - `section` — the label shown as a collapsible heading in the sidebar.
 - `entries` — array of entry objects (same format as top-level entries).
 
-Sections are displayed as collapsible `<details>` elements in the sidebar.
-The active section (the one containing the current page) is expanded
+Sections are displayed as collapsible `<details>` elements in the sidebar.  The active section (the one containing the current page) is expanded
 automatically.
 
 ## Hierarchy Depth
@@ -108,8 +100,7 @@ Guides
 
 ## Source Paths
 
-`src` values are resolved relative to the `zkdocs.conf` file. You can
-organise your Markdown files however you like:
+`src` values are resolved relative to the `zkdocs.conf` file. You can organize your Markdown files however you like:
 
 ```
 docs/
@@ -120,8 +111,7 @@ docs/
     build-integration.md
 ```
 
-The generated URL for a guide mirrors its `src` path with the `.md`
-extension replaced by `.html`:
+The generated URL for a guide mirrors its `src` path with the `.md` extension replaced by `.html`:
 
 - `"src": "getting-started.md"` → `guide/getting-started.html`
 - `"src": "reference/cli.md"` → `guide/reference/cli.html`
@@ -152,19 +142,3 @@ const docs = zkdocs.addDocsStep(b, .{
 });
 ```
 
-## Legacy: guides-only JSON
-
-If you pass a `.json` file whose root is an array (the old `guides.json`
-format), zkdocs still accepts it via the `--docs` flag for backward
-compatibility. Nested sections are supported.
-
-```sh
-zkdocs --root src/root.zig --name MyLib --out site/ --docs docs/guides.json
-```
-
-## Legacy: Directory-based Guides
-
-If `--docs` points to a directory (no file extension), zkdocs falls back to
-the legacy behaviour: all `.md` files in that directory are included as
-top-level guide entries, sorted alphabetically by filename. No nested sections
-are supported in this mode.

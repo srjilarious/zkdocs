@@ -1,7 +1,6 @@
 # Writing Doc Comments
 
-zkdocs reads `///` doc comments from your Zig source and renders them as
-Markdown on the generated documentation pages.
+zkdocs reads `///` doc comments from your Zig source and renders them as Markdown on the generated documentation pages.
 
 ## Syntax
 
@@ -15,9 +14,7 @@ pub fn add(a: i32, b: i32) i32 {
 }
 ```
 
-Multiple consecutive `///` lines are joined into a single block. The `/// `
-prefix (with the trailing space) is stripped; `///` without a space is also
-supported.
+Multiple consecutive `///` lines are joined into a single block. The `/// ` prefix (with the trailing space) is stripped; `///` without a space is also supported.
 
 ## Markdown in Doc Comments
 
@@ -61,8 +58,7 @@ zkdocs renders these in the **Field** column of the fields table.
 
 ## Generic Type Constructors
 
-Functions that return `type` are treated as type constructors and shown in the
-**Types** section. Document them like any other `pub` declaration:
+Functions that return `type` are treated as type constructors and shown in the **Types** section. Document them like any other `pub` declaration:
 
 ```zig
 /// A generic ring buffer holding elements of type `T`.
@@ -79,8 +75,7 @@ pub fn RingBuf(comptime T: type) type {
 }
 ```
 
-Fields and methods of the returned struct are extracted and displayed just like
-a named container.
+Fields and methods of the returned struct are extracted and displayed just like a named container.
 
 ## Emoji Shortcodes
 
@@ -91,5 +86,4 @@ You can use `:name:` shortcodes anywhere in doc comments or guide pages:
 pub fn launch() !void { ... }
 ```
 
-Shortcodes are skipped inside code blocks. See the CLI docs for available
-emoji providers.
+Shortcodes are skipped inside code blocks. See the CLI docs for available emoji providers.

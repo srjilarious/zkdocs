@@ -116,6 +116,7 @@ pub fn build(b: *std.Build) void {
     });
     tests_exe.root_module.addImport("testz", testz_dep.module("testz"));
     tests_exe.root_module.addImport("symbols", symbols_mod);
+    tests_exe.root_module.addImport("markdown", markdown_mod);
 
     const tests_run = b.addRunArtifact(tests_exe);
     if (b.args) |args| tests_run.addArgs(args);

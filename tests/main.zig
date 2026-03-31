@@ -1,6 +1,7 @@
 const std = @import("std");
 const testz = @import("testz");
 const symbols = @import("symbols");
+const markdown = @import("markdown");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -249,6 +250,80 @@ const ImportTests = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Tests: markdown rendering
+// ---------------------------------------------------------------------------
+
+const MarkdownTests = struct {
+    /// Code fence containing embedded ``` lines (e.g. doc-comment examples)
+    /// must not close the outer block prematurely.
+    pub fn embeddedFenceDoesNotCloseBlock() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const md =
+            \\```zig
+            \\/// ## Example
+            \\///
+            \\/// ```zig
+            \\/// const x = foo();
+            \\/// ```
+            \\pub fn foo() void {}
+            \\```
+        ;
+        const html = try markdown.toHtml(allocator, md);
+        defer allocator.free(html);
+
+        // Whole input must appear in one <pre><code> block.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<pre>") != null);
+        // The embedded ``` should appear as literal text, not close the block.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "```zig") != null);
+        // There should be exactly one closing </code></pre>, not two.
+        const first = std.mem.indexOf(u8, html, "</code></pre>") orelse
+            return error.NoCodeBlock;
+        const second = std.mem.indexOf(u8, html[first + 1 ..], "</code></pre>");
+        try testz.expectTrue(second == null);
+    }
+
+    /// Inline code content must be HTML-escaped (no raw < > & in output).
+    pub fn inlineCodeIsEscaped() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const html = try markdown.toHtml(allocator, "use `a < b && c > 0` here");
+        defer allocator.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "&lt;") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "&amp;&amp;") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "&gt;") != null);
+        // Raw unescaped characters must not appear inside <code>.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>a < b") == null);
+    }
+
+    /// Doc-comment lines starting with `///` inside a code block must not be
+    /// rendered as italics (the `*` or `_` formatters must not fire inside blocks).
+    pub fn docCommentLinesNotItalic() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const md =
+            \\```zig
+            \\/// Returns a sorted copy of `items`.
+            \\pub fn sort(items: []const i32) ![]i32 { ... }
+            \\```
+        ;
+        const html = try markdown.toHtml(allocator, md);
+        defer allocator.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<i>") == null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<em>") == null);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Test runner
 // ---------------------------------------------------------------------------
 
@@ -257,6 +332,7 @@ const DiscoveredTests = testz.discoverTests(.{
     testz.Group{ .name = "Doc Comments", .tag = "docs", .mod = DocTests },
     testz.Group{ .name = "Container Extraction", .tag = "containers", .mod = ContainerTests },
     testz.Group{ .name = "Import Following", .tag = "imports", .mod = ImportTests },
+    testz.Group{ .name = "Markdown Rendering", .tag = "markdown", .mod = MarkdownTests },
 }, .{});
 
 pub fn main() !void {

@@ -186,16 +186,31 @@ fn firstToken(self: *Ast, previous_token: ?Token, index: usize) ?Token {
     if (previous_token) |previous| {
         if (tokens.toggles.get(@tagName(previous.element.type))) |toggle| {
             const offset = previous.start + previous.element.syntax.len;
-            const indexed = std.mem.indexOf(
-                u8,
-                self.input[offset..],
-                toggle.syntax,
-            );
-            if (indexed) |toggle_index| return .{
-                .element = toggle,
-                .start = offset + toggle_index,
-                .end = offset + toggle_index + toggle.syntax.len,
-            };
+            // block_close (```) must appear at the start of a line so that
+            // embedded fences inside code block content don't prematurely
+            // close the outer block.
+            if (toggle.type == .block_close) {
+                var search = offset;
+                while (search < self.input.len) {
+                    const rel = std.mem.indexOf(u8, self.input[search..], toggle.syntax) orelse break;
+                    const abs = search + rel;
+                    if (abs == 0 or self.input[abs - 1] == '\n') {
+                        return .{
+                            .element = toggle,
+                            .start = abs,
+                            .end = abs + toggle.syntax.len,
+                        };
+                    }
+                    search = abs + 1;
+                }
+            } else {
+                const indexed = std.mem.indexOf(u8, self.input[offset..], toggle.syntax);
+                if (indexed) |toggle_index| return .{
+                    .element = toggle,
+                    .start = offset + toggle_index,
+                    .end = offset + toggle_index + toggle.syntax.len,
+                };
+            }
         }
     }
 
