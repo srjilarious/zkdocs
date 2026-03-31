@@ -303,6 +303,72 @@ const MarkdownTests = struct {
         try testz.expectTrue(std.mem.indexOf(u8, html, "<code>a < b") == null);
     }
 
+    /// Two sequential code fences must produce two separate code blocks with
+    /// any content between them rendered as a normal paragraph.
+    pub fn sequentialFencesProduceTwoBlocks() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        // Use plain fences (no language tag) so content isn't split by the
+        // syntax highlighter, making substring checks on content reliable.
+        const md =
+            \\```
+            \\block_one_content
+            \\```
+            \\
+            \\and then...
+            \\
+            \\```
+            \\block_two_content
+            \\```
+        ;
+        const html = try markdown.toHtml(allocator, md);
+        defer allocator.free(html);
+
+        // Must contain exactly two <pre> blocks.
+        const first_pre = std.mem.indexOf(u8, html, "<pre>") orelse
+            return error.NoPre;
+        const second_pre = std.mem.indexOf(u8, html[first_pre + 1 ..], "<pre>");
+        try testz.expectTrue(second_pre != null);
+
+        // The middle paragraph must appear between the two blocks.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "and then") != null);
+
+        // Content of both blocks must be present.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "block_one_content") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "block_two_content") != null);
+    }
+
+    /// Sequential code fences in an extracted doc comment must produce two
+    /// separate code blocks, not merge into one or garble the closing fence.
+    pub fn sequentialFencesInDocComment() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
+        defer symbols.deinitModules(allocator, mods);
+
+        const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
+        const sym = findSymbol(sample.symbols.items, .container, "SequentialFenceExample") orelse
+            return error.SymbolNotFound;
+        const doc = sym.container.?.doc orelse return error.NoDoc;
+
+        // The extracted doc must contain two separate fences on their own lines.
+        const first_fence = std.mem.indexOf(u8, doc, "```") orelse return error.NoFence;
+        const second_fence = std.mem.indexOf(u8, doc[first_fence + 3 ..], "```");
+        try testz.expectTrue(second_fence != null);
+
+        // Render to HTML and verify two <pre> blocks are produced.
+        const html = try markdown.toHtml(allocator, doc);
+        defer allocator.free(html);
+
+        const first_pre = std.mem.indexOf(u8, html, "<pre>") orelse return error.NoPre;
+        const second_pre = std.mem.indexOf(u8, html[first_pre + 1 ..], "<pre>");
+        try testz.expectTrue(second_pre != null);
+    }
+
     /// Doc-comment lines starting with `///` inside a code block must not be
     /// rendered as italics (the `*` or `_` formatters must not fire inside blocks).
     pub fn docCommentLinesNotItalic() !void {

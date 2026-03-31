@@ -142,12 +142,16 @@ fn collectDocComment(
         else
             raw;
 
-        // Track code-fence boundaries.
+        // Track code-fence boundaries. We need to know whether we were inside
+        // a code block BEFORE this line to decide the join character, so
+        // capture the pre-toggle state first.
+        const wasInCodeBlock = inCodeBlock;
         if (std.mem.indexOf(u8, text, "```") != null) inCodeBlock = !inCodeBlock;
 
         if (buf.items.len > 0) {
-            if (inCodeBlock) {
-                // Inside a code block every line keeps its newline.
+            if (wasInCodeBlock or inCodeBlock) {
+                // Inside a code block (or transitioning into/out of one) every
+                // line keeps its newline so fences sit on their own lines.
                 try buf.append(allocator, '\n');
             } else if (text.len == 0) {
                 // Blank doc-comment line → paragraph break.

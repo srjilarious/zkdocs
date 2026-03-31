@@ -103,3 +103,16 @@ pub fn Stack(comptime T: type) type {
         pub fn peek(self: *const @This()) ?T { _ = self; return null; }
     };
 }
+
+/// A type with sequential code fences in its doc comment.
+///
+/// First example:
+/// ```zig
+/// const x = 1;
+/// ```
+///
+/// Second example:
+/// ```zig
+/// const y = 2;
+/// ```
+pub const SequentialFenceExample = struct {};

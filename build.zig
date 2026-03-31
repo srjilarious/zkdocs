@@ -132,4 +132,5 @@ pub fn build(b: *std.Build) void {
     });
     const docs_step = b.step("docs", "Generate zkdocs HTML documentation");
     docs_step.dependOn(&docs_run.step);
+
 }
