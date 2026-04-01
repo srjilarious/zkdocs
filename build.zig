@@ -77,6 +77,10 @@ pub fn build(b: *std.Build) void {
     markdown_mod.addImport("zmd", zmd_mod);
     markdown_mod.addImport("highlight", highlight_mod);
 
+    const example_mod = b.addModule("example", .{
+        .root_source_file = b.path("src/example.zig"),
+    });
+
     const render_mod = b.addModule("render", .{
         .root_source_file = b.path("src/render.zig"),
     });
@@ -84,6 +88,7 @@ pub fn build(b: *std.Build) void {
     render_mod.addImport("markdown", markdown_mod);
     render_mod.addImport("emoji", emoji_mod);
     render_mod.addImport("cache", cache_mod);
+    render_mod.addImport("example", example_mod);
 
     const exe = b.addExecutable(.{
         .name = "zkdocs",
@@ -118,6 +123,7 @@ pub fn build(b: *std.Build) void {
     tests_exe.root_module.addImport("symbols", symbols_mod);
     tests_exe.root_module.addImport("markdown", markdown_mod);
     tests_exe.root_module.addImport("render", render_mod);
+    tests_exe.root_module.addImport("example", example_mod);
 
     const tests_run = b.addRunArtifact(tests_exe);
     if (b.args) |args| tests_run.addArgs(args);

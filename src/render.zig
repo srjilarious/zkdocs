@@ -3,6 +3,7 @@ const symbols = @import("symbols");
 pub const markdown = @import("markdown");
 const emoji = @import("emoji");
 pub const cache_mod = @import("cache");
+const example_mod = @import("example");
 
 const CSS          = @embedFile("assets/style.css");
 const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
@@ -113,6 +114,23 @@ pub fn freeGuides(allocator: std.mem.Allocator, guides: []GuideNavItem) void {
     for (guides) |*item| freeNavItem(allocator, item);
     allocator.free(guides);
 }
+
+/// A single literate example page loaded from a `.zig` source file.
+pub const ExampleEntry = struct {
+    slug: []const u8,
+    title: []const u8,
+    /// Absolute path to the source .zig file; used for cache mtime checks.
+    src_path: []const u8,
+    /// Raw source content (loaded at conf-parse time).
+    src: []const u8,
+
+    pub fn deinit(self: *ExampleEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.slug);
+        allocator.free(self.title);
+        allocator.free(self.src_path);
+        allocator.free(self.src);
+    }
+};
 
 fn guidesHaveEntries(guides: []const GuideNavItem) bool {
     for (guides) |item| switch (item) {
@@ -452,8 +470,10 @@ fn writeHeader(
     project_name: []const u8,
     mods: []const symbols.Module,
     guides: []const GuideNavItem,
+    examples: []const ExampleEntry,
     active_module: ?[]const u8,
     active_guide: ?[]const u8,
+    active_example: ?[]const u8,
     prefix: []const u8,
 ) !void {
     try buf.writeAll("<!DOCTYPE html>\n<html lang=\"en\"");
@@ -548,6 +568,23 @@ fn writeHeader(
             // Only render top-level (root) modules here; children are nested inside their parent.
             if (mod.parent_name == null)
                 try writeModuleNavItem(buf, mod, mods, active_module, prefix);
+        }
+        try buf.writeAll("</ul>\n</details>\n");
+    }
+
+    if (examples.len > 0) {
+        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Examples</summary>\n<ul>\n");
+        for (examples) |e| {
+            const is_active = if (active_example) |ae| std.mem.eql(u8, ae, e.slug) else false;
+            const ex_href = try std.fmt.allocPrint(buf.alloc, "{s}/example/{s}.html", .{ prefix, e.slug });
+            defer buf.alloc.free(ex_href);
+            if (is_active) {
+                try buf.print("<li><a href=\"{s}\" class=\"active\">", .{ex_href});
+            } else {
+                try buf.print("<li><a href=\"{s}\">", .{ex_href});
+            }
+            try htmlEscape(buf, e.title);
+            try buf.writeAll("</a></li>\n");
         }
         try buf.writeAll("</ul>\n</details>\n");
     }
@@ -977,6 +1014,8 @@ pub const SiteConf = struct {
     conf_dir: []const u8,
     /// Slug of the guide to render as `index.html` (`"home"` key), or null.
     home_slug: ?[]const u8,
+    /// Literate example pages (`"examples"` array in conf).
+    examples: ?[]ExampleEntry = null,
 
     pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
         if (self.name) |n| allocator.free(n);
@@ -988,6 +1027,10 @@ pub const SiteConf = struct {
         freeGuides(allocator, self.guides);
         allocator.free(self.conf_dir);
         if (self.home_slug) |hs| allocator.free(hs);
+        if (self.examples) |exs| {
+            for (exs) |*e| e.deinit(allocator);
+            allocator.free(exs);
+        }
     }
 };
 
@@ -1099,6 +1142,52 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
     } else null;
     errdefer if (home_slug) |hs| allocator.free(hs);
 
+    // --- examples ---
+    var examples: ?[]ExampleEntry = null;
+    errdefer if (examples) |exs| {
+        for (exs) |*e| e.deinit(allocator);
+        allocator.free(exs);
+    };
+    if (obj.get("examples")) |ev| if (ev == .array) {
+        var exs: std.ArrayList(ExampleEntry) = .{};
+        errdefer {
+            for (exs.items) |*e| e.deinit(allocator);
+            exs.deinit(allocator);
+        }
+        for (ev.array.items) |item| {
+            if (item != .object) continue;
+            const eobj = item.object;
+            const title_v = eobj.get("title") orelse continue;
+            const src_v = eobj.get("src") orelse continue;
+            if (title_v != .string or src_v != .string) continue;
+
+            const full_path = try std.fs.path.join(allocator, &.{ conf_dir, src_v.string });
+            defer allocator.free(full_path);
+
+            const src_path = cache_mod.absPath(allocator, full_path) catch
+                try allocator.dupe(u8, full_path);
+            errdefer allocator.free(src_path);
+
+            const src = try std.fs.cwd().readFileAlloc(allocator, full_path, 4 * 1024 * 1024);
+            errdefer allocator.free(src);
+
+            const stem = std.fs.path.stem(src_v.string);
+            const slug = try allocator.dupe(u8, stem);
+            errdefer allocator.free(slug);
+
+            const title = try allocator.dupe(u8, title_v.string);
+            errdefer allocator.free(title);
+
+            try exs.append(allocator, .{
+                .slug = slug,
+                .title = title,
+                .src_path = src_path,
+                .src = src,
+            });
+        }
+        examples = try exs.toOwnedSlice(allocator);
+    };
+
     return .{
         .name = name,
         .sources = sources,
@@ -1107,6 +1196,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         .guides = guides,
         .conf_dir = try allocator.dupe(u8, conf_dir),
         .home_slug = home_slug,
+        .examples = examples,
     };
 }
 
@@ -1163,6 +1253,7 @@ fn writeSearchIndex(
     out_dir: *std.fs.Dir,
     mods: []const symbols.Module,
     guides: []const GuideNavItem,
+    examples: []const ExampleEntry,
     home_slug: ?[]const u8,
 ) !void {
     var buf: std.ArrayList(u8) = .{};
@@ -1196,6 +1287,15 @@ fn writeSearchIndex(
                 }
             },
         }
+    }
+
+    // Example pages
+    for (examples) |e| {
+        const url = try std.fmt.allocPrint(allocator, "example/{s}.html", .{e.slug});
+        defer allocator.free(url);
+        if (id > 0) try buf.append(allocator, ',');
+        try appendSearchDoc(&buf, allocator, id, e.title, e.src, url, "example");
+        id += 1;
     }
 
     // API symbols
@@ -1259,6 +1359,8 @@ pub fn renderSite(
     mods: []const symbols.Module,
     /// Guide nav items loaded from `zkdocs.conf`. Not freed by this function.
     guides: []const GuideNavItem,
+    /// Literate example pages loaded from `zkdocs.conf`. Not freed by this function.
+    examples: []const ExampleEntry,
     emoji_provider: emoji.Provider,
     theme: Theme,
     progress: *Progress,
@@ -1312,7 +1414,7 @@ pub fn renderSite(
         defer f.close();
         try f.writeAll(SEARCH_JS);
     }
-    try writeSearchIndex(allocator, &out_dir, mods, guides, home_slug);
+    try writeSearchIndex(allocator, &out_dir, mods, guides, examples, home_slug);
 
 
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
@@ -1349,13 +1451,13 @@ pub fn renderSite(
     if (conf_changed or sources_changed or home_changed) {
     if (home_entry) |he| {
         // Render the designated guide as index.html.
-        try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, true, cache);
+        try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, true, cache);
     } else {
         var buf = Buf.init(allocator, emoji_provider, theme);
         defer buf.deinit();
         buf.home_slug = home_slug;
 
-        try writeHeader(&buf, project_name, project_name, mods, guides, null, null, ".");
+        try writeHeader(&buf, project_name, project_name, mods, guides, examples, null, null, null, ".");
 
         try buf.writeAll("<h1>");
         try htmlEscape(&buf, project_name);
@@ -1451,7 +1553,7 @@ pub fn renderSite(
             const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
             defer allocator.free(title);
 
-            try writeHeader(&buf, title, project_name, mods, guides, mod.name, null, "..");
+            try writeHeader(&buf, title, project_name, mods, guides, examples, mod.name, null, null, "..");
 
             try buf.writeAll("<h1>");
             try htmlEscape(&buf, mod.name);
@@ -1541,17 +1643,32 @@ pub fn renderSite(
                 if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
                     continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false, cache);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, false, cache);
             },
             .section => |s| for (s.entries) |e| {
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
                 if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
                     continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, emoji_provider, theme, conf_dir, home_slug, false, cache);
+                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, false, cache);
             },
         };
         Progress.endFiles();
+    }
+
+    // ── example pages ────────────────────────────────────────────────────────
+    if (examples.len > 0) {
+        try out_dir.makePath("example");
+        for (examples) |e| {
+            if (!conf_changed and e.src_path.len > 0 and cache.sourceUnchanged(e.src_path))
+                continue;
+            Progress.setCurrent(e.slug);
+            try renderExamplePage(allocator, &out_dir, e, project_name, mods, guides, examples, emoji_provider, theme, home_slug);
+            Progress.endFiles();
+        }
+        for (examples) |e| {
+            if (e.src_path.len > 0) cache.recordSource(e.src_path) catch {};
+        }
     }
 
     // ── Update and save build cache ──────────────────────────────────────────
@@ -1837,6 +1954,7 @@ fn renderGuidePage(
     project_name: []const u8,
     mods: []const symbols.Module,
     guides: []const GuideNavItem,
+    examples: []const ExampleEntry,
     emoji_provider: emoji.Provider,
     theme: Theme,
     conf_dir: ?[]const u8,
@@ -1859,7 +1977,7 @@ fn renderGuidePage(
     else
         "..";
 
-    try writeHeader(&buf, title, project_name, mods, guides, null, entry.slug, prefix);
+    try writeHeader(&buf, title, project_name, mods, guides, examples, null, entry.slug, null, prefix);
 
     const raw = try markdown.toHtml(allocator, entry.content);
     defer allocator.free(raw);
@@ -1890,6 +2008,100 @@ fn renderGuidePage(
     if (std.fs.path.dirname(filename)) |dir_path| {
         try out_dir.makePath(dir_path);
     }
+
+    const file = try out_dir.createFile(filename, .{});
+    defer file.close();
+    try buf.flush(file);
+}
+
+// ---------------------------------------------------------------------------
+// Literate example pages
+// ---------------------------------------------------------------------------
+
+fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []const example_mod.Segment, mods: []const symbols.Module, prefix: []const u8) !void {
+    for (segments) |seg| {
+        switch (seg.kind) {
+            .prose => {
+                const raw = try markdown.toHtml(allocator, seg.text);
+                defer allocator.free(raw);
+                const html = try resolveInternalLinks(allocator, raw, mods, prefix);
+                defer allocator.free(html);
+                try buf.writeAll("<div class=\"example-prose\">\n");
+                try buf.writeAll(html);
+                try buf.writeAll("</div>\n");
+            },
+            .code => {
+                const highlighted = markdown.highlight.highlightZig(allocator, seg.text) catch blk: {
+                    // Fallback: HTML-escape raw source.
+                    var esc: std.ArrayList(u8) = .{};
+                    defer esc.deinit(allocator);
+                    for (seg.text) |c| switch (c) {
+                        '<' => try esc.appendSlice(allocator, "&lt;"),
+                        '>' => try esc.appendSlice(allocator, "&gt;"),
+                        '&' => try esc.appendSlice(allocator, "&amp;"),
+                        else => try esc.append(allocator, c),
+                    };
+                    break :blk try esc.toOwnedSlice(allocator);
+                };
+                defer allocator.free(highlighted);
+                try buf.writeAll("<pre class=\"example-code\"><code class=\"language-zig\">");
+                try buf.writeAll(highlighted);
+                try buf.writeAll("</code></pre>\n");
+            },
+            .collapsed => {
+                const label = seg.label orelse "Show code";
+                try buf.writeAll("<details class=\"example-collapsed\">\n<summary>");
+                try htmlEscape(buf, label);
+                try buf.writeAll("</summary>\n");
+                try renderExampleSegments(buf, allocator, seg.children, mods, prefix);
+                try buf.writeAll("</details>\n");
+            },
+        }
+    }
+}
+
+fn renderExamplePage(
+    allocator: std.mem.Allocator,
+    out_dir: *std.fs.Dir,
+    entry: ExampleEntry,
+    project_name: []const u8,
+    mods: []const symbols.Module,
+    guides: []const GuideNavItem,
+    examples: []const ExampleEntry,
+    emoji_provider: emoji.Provider,
+    theme: Theme,
+    home_slug: ?[]const u8,
+) !void {
+    var buf = Buf.init(allocator, emoji_provider, theme);
+    defer buf.deinit();
+    buf.home_slug = home_slug;
+
+    const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
+    defer allocator.free(title);
+
+    // example/*.html → prefix is ".."
+    const prefix = "..";
+
+    try writeHeader(&buf, title, project_name, mods, guides, examples, null, null, entry.slug, prefix);
+
+    try buf.writeAll("<div class=\"guide-content example-page\">\n");
+    try buf.print("<h1>", .{});
+    try htmlEscape(&buf, entry.title);
+    try buf.writeAll("</h1>\n");
+
+    const segments = try example_mod.parse(allocator, entry.src);
+    defer {
+        example_mod.freeSegments(allocator, segments);
+        allocator.free(segments);
+    }
+
+    try renderExampleSegments(&buf, allocator, segments, mods, prefix);
+
+    try buf.writeAll("</div>\n");
+    try writeFooter(&buf);
+
+    const filename = try std.fmt.allocPrint(allocator, "example/{s}.html", .{entry.slug});
+    defer allocator.free(filename);
 
     const file = try out_dir.createFile(filename, .{});
     defer file.close();

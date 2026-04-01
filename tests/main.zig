@@ -3,6 +3,7 @@ const testz = @import("testz");
 const symbols = @import("symbols");
 const markdown = @import("markdown");
 const render = @import("render");
+const example = @import("example");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -461,6 +462,80 @@ const RenderTests = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Example parse tests
+// ---------------------------------------------------------------------------
+
+const ExampleTests = struct {
+    /// Adjacent non-empty prose lines are joined with a space, not separated
+    /// into individual paragraphs.
+    pub fn proseLinesJoinedWithSpace() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const src =
+            \\//* First sentence of the paragraph.
+            \\//* Second sentence on the next line.
+            \\//* Third sentence still same paragraph.
+        ;
+        const segs = try example.parse(allocator, src);
+        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+
+        try testz.expectEqual(segs.len, 1);
+        try testz.expectEqual(segs[0].kind, example.SegmentKind.prose);
+        // All three sentences should be in a single prose segment joined by spaces.
+        try testz.expectTrue(std.mem.indexOf(u8, segs[0].text, "First sentence") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, segs[0].text, "Second sentence") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, segs[0].text, "Third sentence") != null);
+        // Must NOT contain a bare newline between the sentences (would cause paragraph split).
+        const first_pos = std.mem.indexOf(u8, segs[0].text, "First sentence").?;
+        const second_pos = std.mem.indexOf(u8, segs[0].text, "Second sentence").?;
+        const between = segs[0].text[first_pos..second_pos];
+        try testz.expectTrue(std.mem.indexOf(u8, between, "\n") == null);
+    }
+
+    /// A blank //* line creates a paragraph break (two newlines in the text).
+    pub fn blankLineCreatesParagraphBreak() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const src =
+            \\//* First paragraph text.
+            \\//*
+            \\//* Second paragraph text.
+        ;
+        const segs = try example.parse(allocator, src);
+        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+
+        try testz.expectEqual(segs.len, 1);
+        // The single prose segment should contain a double newline between the paragraphs.
+        try testz.expectTrue(std.mem.indexOf(u8, segs[0].text, "\n\n") != null);
+    }
+
+    /// A heading line (//* # ...) always starts on its own line, not joined
+    /// with the preceding prose.
+    pub fn headingStartsOnNewLine() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const src =
+            \\//* Some intro text.
+            \\//* # The Heading
+            \\//* Text after heading.
+        ;
+        const segs = try example.parse(allocator, src);
+        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+
+        try testz.expectEqual(segs.len, 1);
+        // The heading must start on its own line (preceded by \n, not a space).
+        const heading_pos = std.mem.indexOf(u8, segs[0].text, "# The Heading").?;
+        try testz.expectTrue(heading_pos == 0 or segs[0].text[heading_pos - 1] == '\n');
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Test runner
 // ---------------------------------------------------------------------------
 
@@ -471,6 +546,7 @@ const DiscoveredTests = testz.discoverTests(.{
     testz.Group{ .name = "Import Following", .tag = "imports", .mod = ImportTests },
     testz.Group{ .name = "Markdown Rendering", .tag = "markdown", .mod = MarkdownTests },
     testz.Group{ .name = "Render / Sym Links", .tag = "render", .mod = RenderTests },
+    testz.Group{ .name = "Example Parsing", .tag = "example", .mod = ExampleTests },
 }, .{});
 
 pub fn main() !void {
