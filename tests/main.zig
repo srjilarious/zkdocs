@@ -1,14 +1,14 @@
+//* -- collapsed: Imports --
 const std = @import("std");
 const testz = @import("testz");
-const symbols = @import("symbols");
-const markdown = @import("markdown");
-const render = @import("render");
-const example = @import("example");
+const zkdocs = @import("zkdocs");
+const symbols = zkdocs.symbols;
+const markdown = zkdocs.markdown;
+const render = zkdocs.render;
+const example = zkdocs.example;
+//* ---
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+//* -- collapsed: Helper methods --
 fn findModule(mods: []const symbols.Module, name: []const u8) ?symbols.Module {
     for (mods) |m| {
         if (std.mem.eql(u8, m.name, name)) return m;
@@ -30,9 +30,9 @@ fn findSymbol(syms: []const symbols.Symbol, kind: symbols.SymbolKind, name: []co
     return null;
 }
 
-// ---------------------------------------------------------------------------
-// Tests: function extraction
-// ---------------------------------------------------------------------------
+//* ---
+
+//* The following tests module checks that the `symbols` module correctly extracts information from Zig source files, and that the `markdown` and `render` modules correctly handle doc comments and link resolution. The tests use a sample Zig file `sample.zig` which contains various constructs to test against.
 
 const FunctionTests = struct {
     pub fn addFunctionIsExtracted() !void {
@@ -124,10 +124,7 @@ const DocTests = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests: container extraction
-// ---------------------------------------------------------------------------
-
+//* This module checks that the `symbols` module correctly follows imports and extracts symbols from multiple modules, not just the root. The `sample.zig` file imports a `math.zig` module, so we check that symbols from `math.zig` are also extracted and that their properties (like `pub`) are correct.
 const ContainerTests = struct {
     pub fn structFieldsExtracted() !void {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -199,10 +196,7 @@ const ContainerTests = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests: import following
-// ---------------------------------------------------------------------------
-
+//* This test module checks that the `symbols` module correctly follows imports and extracts symbols from multiple modules, not just the root file.
 const ImportTests = struct {
     pub fn mathModuleFollowed() !void {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -251,10 +245,7 @@ const ImportTests = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests: markdown rendering
-// ---------------------------------------------------------------------------
-
+//* These tests check that the `markdown` module correctly handles various edge cases in Markdown rendering, such as embedded code fences, inline code escaping, and sequential fences. The tests verify that the output HTML is structured correctly and that special characters are escaped as needed. One test also checks that doc-comment lines starting with `///` inside code blocks are not mistakenly rendered as italics.
 const MarkdownTests = struct {
     /// Code fence containing embedded ``` lines (e.g. doc-comment examples)
     /// must not close the outer block prematurely.
@@ -391,10 +382,7 @@ const MarkdownTests = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests: render / sym link rewriting
-// ---------------------------------------------------------------------------
-
+//* This module checks that the `symbols` module correctly follows imports and extracts symbols from multiple modules, not just the root file. The `sample.zig` file imports a `math.zig` module, so we check that symbols from `math.zig` are also extracted and that their properties (like `pub`) are correct.
 const RenderTests = struct {
     /// `[](sym:Foo)` with no link text should inject `<code>Foo</code>`.
     pub fn emptySymLinkInjectsCodeName() !void {
@@ -402,8 +390,7 @@ const RenderTests = struct {
         defer _ = gpa.deinit();
         const allocator = gpa.allocator();
 
-        const html = try render.resolveInternalLinks(
-            allocator,
+        const html = try render.resolveInternalLinks(allocator,
             \\<a href="sym:MyStruct"></a>
         , &.{}, ".");
         defer allocator.free(html);
@@ -417,8 +404,7 @@ const RenderTests = struct {
         defer _ = gpa.deinit();
         const allocator = gpa.allocator();
 
-        const html = try render.resolveInternalLinks(
-            allocator,
+        const html = try render.resolveInternalLinks(allocator,
             \\<a href="sym:mymod.MyStruct"></a>
         , &.{}, ".");
         defer allocator.free(html);
@@ -450,8 +436,7 @@ const RenderTests = struct {
         defer _ = gpa.deinit();
         const allocator = gpa.allocator();
 
-        const html = try render.resolveInternalLinks(
-            allocator,
+        const html = try render.resolveInternalLinks(allocator,
             \\<a href="sym:MyStruct">CustomText</a>
         , &.{}, ".");
         defer allocator.free(html);
@@ -461,10 +446,7 @@ const RenderTests = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Example parse tests
-// ---------------------------------------------------------------------------
-
+//* This module checks that prose lines in example zig files are handled properly. The `example` module should join adjacent non-empty lines into a single prose segment, but a blank line should create a paragraph break (double newline). Heading lines should start on their own line, and indented lines should track their indent level and flush the current segment when the indent changes.
 const ExampleTests = struct {
     /// Adjacent non-empty prose lines are joined with a space, not separated
     /// into individual paragraphs.
@@ -479,7 +461,10 @@ const ExampleTests = struct {
             \\//* Third sentence still same paragraph.
         ;
         const segs = try example.parse(allocator, src);
-        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+        defer {
+            example.freeSegments(allocator, segs);
+            allocator.free(segs);
+        }
 
         try testz.expectEqual(segs.len, 1);
         try testz.expectEqual(segs[0].kind, example.SegmentKind.prose);
@@ -506,7 +491,10 @@ const ExampleTests = struct {
             \\//* Second paragraph text.
         ;
         const segs = try example.parse(allocator, src);
-        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+        defer {
+            example.freeSegments(allocator, segs);
+            allocator.free(segs);
+        }
 
         try testz.expectEqual(segs.len, 1);
         // The single prose segment should contain a double newline between the paragraphs.
@@ -526,7 +514,10 @@ const ExampleTests = struct {
             \\//* Text after heading.
         ;
         const segs = try example.parse(allocator, src);
-        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+        defer {
+            example.freeSegments(allocator, segs);
+            allocator.free(segs);
+        }
 
         try testz.expectEqual(segs.len, 1);
         // The heading must start on its own line (preceded by \n, not a space).
@@ -548,7 +539,10 @@ const ExampleTests = struct {
             \\//* Back to top level.
         ;
         const segs = try example.parse(allocator, src);
-        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+        defer {
+            example.freeSegments(allocator, segs);
+            allocator.free(segs);
+        }
 
         // Three prose segments: indent 0, indent 4, indent 0.
         try testz.expectEqual(segs.len, 3);
@@ -561,10 +555,8 @@ const ExampleTests = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Test runner
-// ---------------------------------------------------------------------------
-
+//* -- collapsed: Test discovery and runner --
+//* The `testz` framework uses a list of test groups and their associated modules to discover test functions to run. Each group has a name, a tag for filtering, and a reference to the module containing the tests. The `main` function then runs all discovered tests using the default `testzRunner` helper method, handling argument parsing, etc.
 const DiscoveredTests = testz.discoverTests(.{
     testz.Group{ .name = "Function Extraction", .tag = "functions", .mod = FunctionTests },
     testz.Group{ .name = "Doc Comments", .tag = "docs", .mod = DocTests },
@@ -578,3 +570,4 @@ const DiscoveredTests = testz.discoverTests(.{
 pub fn main() !void {
     try testz.testzRunner(DiscoveredTests);
 }
+//* ---

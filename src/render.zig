@@ -1,13 +1,13 @@
 const std = @import("std");
-const symbols = @import("symbols");
-pub const markdown = @import("markdown");
-const emoji = @import("emoji");
-pub const cache_mod = @import("cache");
-const example_mod = @import("example");
+const symbols = @import("./symbols.zig");
+pub const markdown = @import("./markdown.zig");
+const emoji = @import("./emoji.zig");
+pub const cache_mod = @import("./cache.zig");
+const example_mod = @import("./example.zig");
 
-const CSS          = @embedFile("assets/style.css");
+const CSS = @embedFile("assets/style.css");
 const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
-const SEARCH_JS     = @embedFile("assets/search.js");
+const SEARCH_JS = @embedFile("assets/search.js");
 
 // ---------------------------------------------------------------------------
 // Theme
@@ -294,17 +294,17 @@ fn linkCodeSymbols(
     type_index: *const TypeIndex,
     current_module: []const u8,
 ) ![]const u8 {
-    const open_code  = "<code>";
+    const open_code = "<code>";
     const close_code = "</code>";
-    const open_pre   = "<pre";
-    const close_pre  = "</pre>";
+    const open_pre = "<pre";
+    const close_pre = "</pre>";
 
     var out: std.ArrayList(u8) = .{};
     errdefer out.deinit(allocator);
 
     var rest = html;
     while (rest.len > 0) {
-        const pre_pos  = std.mem.indexOf(u8, rest, open_pre);
+        const pre_pos = std.mem.indexOf(u8, rest, open_pre);
         const code_pos = std.mem.indexOf(u8, rest, open_code);
 
         // No more <code> spans at all — flush and stop.
@@ -326,7 +326,7 @@ fn linkCodeSymbols(
 
         // Emit everything before the <code>.
         try out.appendSlice(allocator, rest[0..code_pos.?]);
-        const after_open = rest[code_pos.? + open_code.len..];
+        const after_open = rest[code_pos.? + open_code.len ..];
 
         const close_pos = std.mem.indexOf(u8, after_open, close_code) orelse {
             // Malformed — emit the open tag literally and keep scanning.
@@ -364,7 +364,7 @@ fn linkCodeSymbols(
                         .{ ref.module_name, ref.anchor_name, content },
                     );
                 }
-                rest = after_open[close_pos + close_code.len..];
+                rest = after_open[close_pos + close_code.len ..];
                 continue;
             }
         }
@@ -372,7 +372,7 @@ fn linkCodeSymbols(
         // ── Type.method (or Generic.method): `EventBus.subscribe` ────────────
         if (std.mem.indexOfScalar(u8, content, '.')) |dot| {
             const lhs = content[0..dot];
-            const rhs = content[dot + 1..];
+            const rhs = content[dot + 1 ..];
             // Require exactly one dot and both sides to be valid identifiers.
             if (isIdent(lhs) and isIdent(rhs) and
                 std.mem.indexOfScalar(u8, rhs, '.') == null)
@@ -389,7 +389,7 @@ fn linkCodeSymbols(
                             .{ ref.module_name, lhs, rhs, content },
                         );
                     }
-                    rest = after_open[close_pos + close_code.len..];
+                    rest = after_open[close_pos + close_code.len ..];
                     continue;
                 }
             }
@@ -399,7 +399,7 @@ fn linkCodeSymbols(
         try out.appendSlice(allocator, open_code);
         try out.appendSlice(allocator, content);
         try out.appendSlice(allocator, close_code);
-        rest = after_open[close_pos + close_code.len..];
+        rest = after_open[close_pos + close_code.len ..];
     }
 
     return out.toOwnedSlice(allocator);
@@ -442,7 +442,10 @@ fn writeModuleNavItem(
     var has_children = false;
     for (all_mods) |child| {
         if (child.parent_name) |pn| {
-            if (std.mem.eql(u8, pn, mod.name)) { has_children = true; break; }
+            if (std.mem.eql(u8, pn, mod.name)) {
+                has_children = true;
+                break;
+            }
         }
     }
     if (has_children) {
@@ -992,7 +995,6 @@ pub fn parseJsonWithComments(
     return std.json.parseFromSlice(std.json.Value, allocator, stripped, .{});
 }
 
-
 // ---------------------------------------------------------------------------
 // Full site config (zkdocs.conf)
 // ---------------------------------------------------------------------------
@@ -1208,7 +1210,7 @@ fn jsonEscapeStr(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []con
     try buf.append(allocator, '"');
     for (s) |c| {
         switch (c) {
-            '"'  => try buf.appendSlice(allocator, "\\\""),
+            '"' => try buf.appendSlice(allocator, "\\\""),
             '\\' => try buf.appendSlice(allocator, "\\\\"),
             '\n' => try buf.appendSlice(allocator, "\\n"),
             '\r' => try buf.appendSlice(allocator, "\\r"),
@@ -1416,7 +1418,6 @@ pub fn renderSite(
     }
     try writeSearchIndex(allocator, &out_dir, mods, guides, examples, home_slug);
 
-
     if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
 
     // Build type index once for cross-module type linking.
@@ -1449,85 +1450,85 @@ pub fn renderSite(
     }
 
     if (conf_changed or sources_changed or home_changed) {
-    if (home_entry) |he| {
-        // Render the designated guide as index.html.
-        try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, true, cache);
-    } else {
-        var buf = Buf.init(allocator, emoji_provider, theme);
-        defer buf.deinit();
-        buf.home_slug = home_slug;
+        if (home_entry) |he| {
+            // Render the designated guide as index.html.
+            try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, true, cache);
+        } else {
+            var buf = Buf.init(allocator, emoji_provider, theme);
+            defer buf.deinit();
+            buf.home_slug = home_slug;
 
-        try writeHeader(&buf, project_name, project_name, mods, guides, examples, null, null, null, ".");
+            try writeHeader(&buf, project_name, project_name, mods, guides, examples, null, null, null, ".");
 
-        try buf.writeAll("<h1>");
-        try htmlEscape(&buf, project_name);
-        try buf.writeAll("</h1>\n");
+            try buf.writeAll("<h1>");
+            try htmlEscape(&buf, project_name);
+            try buf.writeAll("</h1>\n");
 
-        if (mods.len > 0) {
-            try buf.writeAll("<h2>Modules</h2>\n<ul class=\"module-list\">\n");
-            for (mods) |mod| {
-                try buf.print("<li><a href=\"./api/{s}.html\">", .{mod.name});
-                try htmlEscape(&buf, mod.name);
-                try buf.writeAll("</a>");
+            if (mods.len > 0) {
+                try buf.writeAll("<h2>Modules</h2>\n<ul class=\"module-list\">\n");
+                for (mods) |mod| {
+                    try buf.print("<li><a href=\"./api/{s}.html\">", .{mod.name});
+                    try htmlEscape(&buf, mod.name);
+                    try buf.writeAll("</a>");
 
-                // Prefer the file-level //! doc; fall back to first symbol doc, then path.
-                const blurb: ?[]const u8 = mod.doc orelse blk: {
-                    for (mod.symbols.items) |sym| {
-                        const d: ?[]const u8 = switch (sym.kind) {
-                            .function  => if (sym.function)  |f| f.doc else null,
-                            .variable  => if (sym.variable)  |v| v.doc else null,
-                            .container => if (sym.container) |c| c.doc else null,
-                            else       => null,
-                        };
-                        if (d != null) break :blk d;
-                    }
-                    break :blk null;
-                };
-                try buf.writeAll("<div class=\"mod-doc\">");
-                if (blurb) |b|
-                    try htmlEscape(&buf, firstSentence(b))
-                else
-                    try htmlEscape(&buf, mod.path);
-                try buf.writeAll("</div>");
-                try buf.writeAll("</li>\n");
+                    // Prefer the file-level //! doc; fall back to first symbol doc, then path.
+                    const blurb: ?[]const u8 = mod.doc orelse blk: {
+                        for (mod.symbols.items) |sym| {
+                            const d: ?[]const u8 = switch (sym.kind) {
+                                .function => if (sym.function) |f| f.doc else null,
+                                .variable => if (sym.variable) |v| v.doc else null,
+                                .container => if (sym.container) |c| c.doc else null,
+                                else => null,
+                            };
+                            if (d != null) break :blk d;
+                        }
+                        break :blk null;
+                    };
+                    try buf.writeAll("<div class=\"mod-doc\">");
+                    if (blurb) |b|
+                        try htmlEscape(&buf, firstSentence(b))
+                    else
+                        try htmlEscape(&buf, mod.path);
+                    try buf.writeAll("</div>");
+                    try buf.writeAll("</li>\n");
+                }
+                try buf.writeAll("</ul>\n");
             }
-            try buf.writeAll("</ul>\n");
-        }
 
-        if (guidesHaveEntries(guides)) {
-            try buf.writeAll("<h2>Guides</h2>\n<ul class=\"module-list\">\n");
-            for (guides) |item| switch (item) {
-                .entry => |e| {
-                    const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
-                    if (is_home) {
-                        try buf.print("<li><a href=\"./index.html\">", .{});
-                    } else {
-                        try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
-                    }
-                    try htmlEscape(&buf, e.title);
-                    try buf.writeAll("</a></li>\n");
-                },
-                .section => |s| {
-                    try buf.writeAll("<li><strong>");
-                    try htmlEscape(&buf, s.title);
-                    try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
-                    for (s.entries) |e| {
-                        try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+            if (guidesHaveEntries(guides)) {
+                try buf.writeAll("<h2>Guides</h2>\n<ul class=\"module-list\">\n");
+                for (guides) |item| switch (item) {
+                    .entry => |e| {
+                        const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                        if (is_home) {
+                            try buf.print("<li><a href=\"./index.html\">", .{});
+                        } else {
+                            try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                        }
                         try htmlEscape(&buf, e.title);
                         try buf.writeAll("</a></li>\n");
-                    }
-                    try buf.writeAll("</ul></li>\n");
-                },
-            };
-            try buf.writeAll("</ul>\n");
-        }
+                    },
+                    .section => |s| {
+                        try buf.writeAll("<li><strong>");
+                        try htmlEscape(&buf, s.title);
+                        try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
+                        for (s.entries) |e| {
+                            try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                            try htmlEscape(&buf, e.title);
+                            try buf.writeAll("</a></li>\n");
+                        }
+                        try buf.writeAll("</ul></li>\n");
+                    },
+                };
+                try buf.writeAll("</ul>\n");
+            }
 
-        try writeFooter(&buf);
+            try writeFooter(&buf);
 
-        const file = try out_dir.createFile("index.html", .{});
-        defer file.close();
-        try buf.flush(file);
-    } // end else (no home guide)
+            const file = try out_dir.createFile("index.html", .{});
+            defer file.close();
+            try buf.flush(file);
+        } // end else (no home guide)
     } // end if (conf_changed or sources_changed)
 
     // ── api/<module>.html ────────────────────────────────────────────────────
@@ -1675,7 +1676,9 @@ pub fn renderSite(
     if (conf_abs_path) |cp| cache.recordConf(cp) catch {};
     for (mods) |mod| cache.recordSource(mod.abs_path) catch {};
     for (guides) |item| switch (item) {
-        .entry => |e| { if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {}; },
+        .entry => |e| {
+            if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {};
+        },
         .section => |s| for (s.entries) |e| {
             if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {};
         },

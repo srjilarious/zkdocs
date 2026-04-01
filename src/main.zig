@@ -1,9 +1,12 @@
 const std = @import("std");
-pub const symbols = @import("symbols");
-pub const render = @import("render");
+pub const symbols = @import("./symbols.zig");
+pub const render = @import("./render.zig");
+pub const markdown = @import("./markdown.zig");
+pub const example = @import("./example.zig");
+
 const zargs = @import("zargunaught");
-pub const emoji = @import("emoji");
-const cache_mod = @import("cache");
+pub const emoji = @import("./emoji.zig");
+const cache_mod = @import("./cache.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

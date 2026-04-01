@@ -1,6 +1,6 @@
 const std = @import("std");
-const zmd = @import("zmd");
-pub const highlight = @import("highlight");
+const zmd = @import("./zmd/zmd.zig");
+pub const highlight = @import("./highlight.zig");
 
 /// Render `markdown` to an HTML fragment (no DOCTYPE/html/body wrapper).
 pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror![]const u8 {
