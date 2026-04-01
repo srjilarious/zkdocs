@@ -6,6 +6,10 @@ pub const Segment = struct {
     kind: SegmentKind,
     /// Prose or code text (owned, heap-allocated).
     text: []const u8 = "",
+    /// For prose segments: number of leading spaces before the //* marker in
+    /// the source file.  Used to apply matching visual indentation in the
+    /// rendered output so prose can optionally align with surrounding code.
+    indent: usize = 0,
     /// For collapsed segments: optional summary label (owned, heap-allocated).
     label: ?[]const u8 = null,
     /// For collapsed segments: child segments (owned slice).
@@ -51,6 +55,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
     var state: State = .top;
     var collapsed_label: ?[]const u8 = null;
     var current_kind: ?SegmentKind = null;
+    var current_indent: usize = 0;
 
     // Flush the current accumulator as a segment into `target`.
     const flush = struct {
@@ -58,6 +63,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             alloc: std.mem.Allocator,
             acc_list: *std.ArrayList(u8),
             kind: ?SegmentKind,
+            indent: usize,
             target: *std.ArrayList(Segment),
         ) !void {
             const k = kind orelse return;
@@ -71,6 +77,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             try target.append(alloc, .{
                 .kind = k,
                 .text = try alloc.dupe(u8, text),
+                .indent = if (k == .prose) indent else 0,
             });
             acc_list.clearRetainingCapacity();
         }
@@ -80,6 +87,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
     while (lines.next()) |line| {
         // Strip leading whitespace to find //* markers regardless of indent.
         const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const line_indent = line.len - trimmed.len;
         if (std.mem.startsWith(u8, trimmed, "//*")) {
             const after_marker = trimmed[3..];
             // Strip one leading space after //* if present.
@@ -91,7 +99,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             // Section control directives.
             if (std.mem.eql(u8, rest, "-- hidden --")) {
                 const target = if (state == .collapsed) &sub else &result;
-                try flush(allocator, &acc, current_kind, target);
+                try flush(allocator, &acc, current_kind, current_indent, target);
                 current_kind = null;
                 state = .hidden;
                 continue;
@@ -99,7 +107,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             if (std.mem.eql(u8, rest, "---")) {
                 // Close the current section.
                 const target = if (state == .collapsed) &sub else &result;
-                try flush(allocator, &acc, current_kind, target);
+                try flush(allocator, &acc, current_kind, current_indent, target);
                 current_kind = null;
                 if (state == .collapsed) {
                     // Build collapsed segment from sub.
@@ -117,7 +125,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             }
             if (std.mem.startsWith(u8, rest, "-- collapsed --")) {
                 const target = if (state == .collapsed) &sub else &result;
-                try flush(allocator, &acc, current_kind, target);
+                try flush(allocator, &acc, current_kind, current_indent, target);
                 current_kind = null;
                 state = .collapsed;
                 collapsed_label = null;
@@ -125,7 +133,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             }
             if (std.mem.startsWith(u8, rest, "-- collapsed:")) {
                 const target = if (state == .collapsed) &sub else &result;
-                try flush(allocator, &acc, current_kind, target);
+                try flush(allocator, &acc, current_kind, current_indent, target);
                 current_kind = null;
                 state = .collapsed;
                 // Extract label: everything after "-- collapsed:" trimmed, strip trailing " --"
@@ -142,10 +150,14 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
 
             // Regular prose line.
             const target = if (state == .collapsed) &sub else &result;
-            if (current_kind != .prose) {
-                try flush(allocator, &acc, current_kind, target);
+
+            // Flush if kind or indent level changed.
+            if (current_kind != .prose or line_indent != current_indent) {
+                try flush(allocator, &acc, current_kind, current_indent, target);
                 current_kind = .prose;
+                current_indent = line_indent;
             }
+
             if (rest.len == 0) {
                 // Blank //* line → paragraph break.
                 if (acc.items.len > 0 and
@@ -180,8 +192,9 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
             if (state == .hidden) continue;
             const target = if (state == .collapsed) &sub else &result;
             if (current_kind != .code) {
-                try flush(allocator, &acc, current_kind, target);
+                try flush(allocator, &acc, current_kind, current_indent, target);
                 current_kind = .code;
+                current_indent = 0;
             }
             if (acc.items.len > 0) try acc.append(allocator, '\n');
             try acc.appendSlice(allocator, line);
@@ -190,7 +203,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
 
     // Flush whatever remains.
     const final_target = if (state == .collapsed) &sub else &result;
-    try flush(allocator, &acc, current_kind, final_target);
+    try flush(allocator, &acc, current_kind, current_indent, final_target);
     acc.deinit(allocator);
 
     // If still in a collapsed state at EOF, close it.

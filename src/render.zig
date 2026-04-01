@@ -2026,7 +2026,11 @@ fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []co
                 defer allocator.free(raw);
                 const html = try resolveInternalLinks(allocator, raw, mods, prefix);
                 defer allocator.free(html);
-                try buf.writeAll("<div class=\"example-prose\">\n");
+                if (seg.indent > 0) {
+                    try buf.print("<div class=\"example-prose\" style=\"margin-left:{d}ch\">\n", .{seg.indent});
+                } else {
+                    try buf.writeAll("<div class=\"example-prose\">\n");
+                }
                 try buf.writeAll(html);
                 try buf.writeAll("</div>\n");
             },

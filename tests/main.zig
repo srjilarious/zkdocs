@@ -533,6 +533,32 @@ const ExampleTests = struct {
         const heading_pos = std.mem.indexOf(u8, segs[0].text, "# The Heading").?;
         try testz.expectTrue(heading_pos == 0 or segs[0].text[heading_pos - 1] == '\n');
     }
+
+    /// Indented //* lines produce separate segments with the correct indent
+    /// count; a change in indent flushes the current segment.
+    pub fn indentedProseTracksIndent() !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        const src =
+            \\//* Top-level prose.
+            \\    //* Indented prose inside function.
+            \\    //* Still indented.
+            \\//* Back to top level.
+        ;
+        const segs = try example.parse(allocator, src);
+        defer { example.freeSegments(allocator, segs); allocator.free(segs); }
+
+        // Three prose segments: indent 0, indent 4, indent 0.
+        try testz.expectEqual(segs.len, 3);
+        try testz.expectEqual(segs[0].indent, 0);
+        try testz.expectEqual(segs[1].indent, 4);
+        // The two indented lines should be joined into one segment.
+        try testz.expectTrue(std.mem.indexOf(u8, segs[1].text, "Indented prose") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, segs[1].text, "Still indented") != null);
+        try testz.expectEqual(segs[2].indent, 0);
+    }
 };
 
 // ---------------------------------------------------------------------------
