@@ -565,16 +565,6 @@ fn writeHeader(
         try buf.writeAll("</ul>\n</details>\n");
     }
 
-    if (mods.len > 0) {
-        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
-        for (mods) |mod| {
-            // Only render top-level (root) modules here; children are nested inside their parent.
-            if (mod.parent_name == null)
-                try writeModuleNavItem(buf, mod, mods, active_module, prefix);
-        }
-        try buf.writeAll("</ul>\n</details>\n");
-    }
-
     if (examples.len > 0) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Examples</summary>\n<ul>\n");
         for (examples) |e| {
@@ -588,6 +578,16 @@ fn writeHeader(
             }
             try htmlEscape(buf, e.title);
             try buf.writeAll("</a></li>\n");
+        }
+        try buf.writeAll("</ul>\n</details>\n");
+    }
+
+    if (mods.len > 0) {
+        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
+        for (mods) |mod| {
+            // Only render top-level (root) modules here; children are nested inside their parent.
+            if (mod.parent_name == null)
+                try writeModuleNavItem(buf, mod, mods, active_module, prefix);
         }
         try buf.writeAll("</ul>\n</details>\n");
     }
@@ -2090,21 +2090,55 @@ fn renderExamplePage(
     const prefix = "..";
 
     try writeHeader(&buf, title, project_name, mods, guides, examples, null, null, entry.slug, prefix);
+    // Example pages have no right-sidebar TOC; reclaim that margin.
+    try buf.writeAll("<style>main{margin-right:0}</style>\n");
 
     try buf.writeAll("<div class=\"guide-content example-page\">\n");
-    try buf.print("<h1>", .{});
+    try buf.writeAll("<div class=\"example-page-header\">\n<h1>");
     try htmlEscape(&buf, entry.title);
-    try buf.writeAll("</h1>\n");
+    try buf.writeAll("</h1>\n<button id=\"raw-toggle\">Raw view</button>\n</div>\n");
 
+    // Prose + code segments view.
+    try buf.writeAll("<div class=\"example-page-content\">\n");
     const segments = try example_mod.parse(allocator, entry.src);
     defer {
         example_mod.freeSegments(allocator, segments);
         allocator.free(segments);
     }
-
     try renderExampleSegments(&buf, allocator, segments, mods, prefix);
+    try buf.writeAll("</div>\n");
+
+    // Raw view: full source in a single syntax-highlighted block (hidden by default).
+    const raw_hl = markdown.highlight.highlightZig(allocator, entry.src) catch blk: {
+        var esc: std.ArrayList(u8) = .{};
+        defer esc.deinit(allocator);
+        for (entry.src) |c| switch (c) {
+            '<' => try esc.appendSlice(allocator, "&lt;"),
+            '>' => try esc.appendSlice(allocator, "&gt;"),
+            '&' => try esc.appendSlice(allocator, "&amp;"),
+            else => try esc.append(allocator, c),
+        };
+        break :blk try esc.toOwnedSlice(allocator);
+    };
+    defer allocator.free(raw_hl);
+    try buf.writeAll("<pre class=\"example-raw-view example-hidden\"><code class=\"language-zig\">");
+    try buf.writeAll(raw_hl);
+    try buf.writeAll("</code></pre>\n");
 
     try buf.writeAll("</div>\n");
+    try buf.writeAll(
+        \\<script>(function(){
+        \\var btn=document.getElementById('raw-toggle');
+        \\var raw=document.querySelector('.example-raw-view');
+        \\var content=document.querySelector('.example-page-content');
+        \\btn.addEventListener('click',function(){
+        \\var toRaw=raw.classList.contains('example-hidden');
+        \\raw.classList.toggle('example-hidden',!toRaw);
+        \\content.classList.toggle('example-hidden',toRaw);
+        \\btn.textContent=toRaw?'Prose view':'Raw view';
+        \\});})();</script>
+        \\
+    );
     try writeFooter(&buf);
 
     const filename = try std.fmt.allocPrint(allocator, "example/{s}.html", .{entry.slug});
