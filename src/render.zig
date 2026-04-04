@@ -718,6 +718,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
             if (sym.kind != .variable) continue;
             const v = sym.variable orelse continue;
             if (!v.is_pub) continue;
+            if (!buf.show_imports and v.is_import) continue;
             try buf.print("<li><a href=\"#sym-{s}\">", .{v.name});
             try htmlEscape(buf, v.name);
             try buf.writeAll("</a></li>\n");
