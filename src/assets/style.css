@@ -218,6 +218,28 @@ details.sym-value-details > pre {
   padding: .6rem .75rem;
   overflow-x: auto;
 }
+details.fn-body {
+  margin-top: .5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+details.fn-body > summary {
+  padding: .2rem .6rem;
+  cursor: pointer;
+  background: var(--bg-card);
+  font-size: .8rem;
+  color: var(--muted);
+  user-select: none;
+  list-style: none;
+}
+details.fn-body > summary::before { content: '▶ '; font-size: .7em; }
+details.fn-body[open] > summary::before { content: '▼ '; }
+details.fn-body > pre {
+  margin: 0;
+  border-radius: 0;
+  overflow-x: auto;
+}
 
 /* ── Fields table ── */
 .fields-table {

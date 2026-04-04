@@ -24,6 +24,9 @@ pub const Function = struct {
     doc: ?[]const u8,
     is_pub: bool,
     generic_return: ?Container = null,
+    /// Source text of the function body block (including braces), or null for
+    /// extern/proto-only declarations.
+    body_src: ?[]const u8 = null,
 };
 
 pub const ContainerKind = enum { @"struct", @"enum", @"union", @"opaque" };
@@ -331,6 +334,7 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
             allocator.free(f.params);
             if (f.return_type_src) |s| allocator.free(s);
             if (f.doc) |s| allocator.free(s);
+            if (f.body_src) |s| allocator.free(s);
             if (f.generic_return) |*c| deinitContainer(allocator, c);
         },
         .variable => if (sym.variable) |*v| {
@@ -404,7 +408,13 @@ fn extractFnSymbol(
     var generic_return: ?Container = null;
     errdefer if (generic_return) |*c| deinitContainer(allocator, c);
 
+    var body_src: ?[]const u8 = null;
+    errdefer if (body_src) |s| allocator.free(s);
+
     if (tree.nodeTag(node) == .fn_decl) {
+        const body_node = tree.nodeData(node).node_and_node[1];
+        body_src = try allocator.dupe(u8, nodeToSource(tree.*, body_node));
+
         if (return_type_src) |rts| {
             if (std.mem.eql(u8, rts, "type")) {
                 if (findReturnedContainerNode(tree, node)) |cn| {
@@ -432,6 +442,7 @@ fn extractFnSymbol(
             .doc = doc,
             .is_pub = is_pub,
             .generic_return = generic_return,
+            .body_src = body_src,
         },
     };
 }

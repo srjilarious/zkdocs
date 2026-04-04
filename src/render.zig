@@ -796,6 +796,24 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
     }
     if (f.doc) |doc| try writeDoc(buf, doc);
 
+    if (f.body_src) |body| {
+        const highlighted = markdown.highlight.highlightZig(buf.alloc, body) catch blk: {
+            var esc: std.ArrayList(u8) = .{};
+            defer esc.deinit(buf.alloc);
+            for (body) |c| switch (c) {
+                '<' => try esc.appendSlice(buf.alloc, "&lt;"),
+                '>' => try esc.appendSlice(buf.alloc, "&gt;"),
+                '&' => try esc.appendSlice(buf.alloc, "&amp;"),
+                else => try esc.append(buf.alloc, c),
+            };
+            break :blk try esc.toOwnedSlice(buf.alloc);
+        };
+        defer buf.alloc.free(highlighted);
+        try buf.writeAll("<details class=\"fn-body\"><summary>source</summary><pre><code class=\"language-zig\">");
+        try buf.writeAll(highlighted);
+        try buf.writeAll("</code></pre></details>\n");
+    }
+
     if (f.generic_return) |gr| {
         if (gr.fields.len > 0) {
             try buf.writeAll(
