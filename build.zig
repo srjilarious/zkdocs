@@ -27,18 +27,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/build_helper.zig"),
     });
 
-    // const symbols_mod = b.addModule("symbols", .{
-    //     .root_source_file = b.path("src/symbols.zig"),
-    // });
-
-    // const cache_mod = b.addModule("cache", .{
-    //     .root_source_file = b.path("src/cache.zig"),
-    // });
-
-    // const emoji_mod = b.addModule("emoji", .{
-    //     .root_source_file = b.path("src/emoji.zig"),
-    // });
-
     // JSON grammar (vendored — no build.zig in the upstream repo)
     const json_grammar_lib = b.addLibrary(.{
         .name = "tree-sitter-json",
@@ -71,25 +59,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/zmd/zmd.zig"),
     });
 
-    // const markdown_mod = b.addModule("markdown", .{
-    //     .root_source_file = b.path("src/markdown.zig"),
-    // });
-    // markdown_mod.addImport("zmd", zmd_mod);
-    // // markdown_mod.addImport("highlight", highlight_mod);
-
-    // const example_mod = b.addModule("example", .{
-    //     .root_source_file = b.path("src/example.zig"),
-    // });
-
-    // const render_mod = b.addModule("render", .{
-    //     .root_source_file = b.path("src/render.zig"),
-    // });
-    // render_mod.addImport("symbols", symbols_mod);
-    // render_mod.addImport("markdown", markdown_mod);
-    // render_mod.addImport("emoji", emoji_mod);
-    // render_mod.addImport("cache", cache_mod);
-    // render_mod.addImport("example", example_mod);
-
     const exe = b.addExecutable(.{
         .name = "zkdocs",
         .root_module = b.createModule(.{
@@ -102,10 +71,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("tree-sitter-zig", tree_sitter_zig_dep.module("tree-sitter-zig"));
     exe.root_module.addImport("tree-sitter-json", json_grammar_mod);
     exe.root_module.addImport("zmd", zmd_mod);
-    // exe.root_module.addImport("symbols", symbols_mod);
-    // exe.root_module.addImport("render", render_mod);
-    // exe.root_module.addImport("emoji", emoji_mod);
-    // exe.root_module.addImport("cache", cache_mod);
     exe.root_module.addImport("zargunaught", zargunaught_dep.module("zargunaught"));
 
     b.installArtifact(exe);
@@ -125,9 +90,6 @@ pub fn build(b: *std.Build) void {
     });
     tests_exe.root_module.addImport("testz", testz_dep.module("testz"));
     tests_exe.root_module.addImport("zkdocs", exe.root_module);
-    // tests_exe.root_module.addImport("markdown", markdown_mod);
-    // tests_exe.root_module.addImport("render", render_mod);
-    // tests_exe.root_module.addImport("example", example_mod);
 
     const tests_run = b.addRunArtifact(tests_exe);
     if (b.args) |args| tests_run.addArgs(args);
