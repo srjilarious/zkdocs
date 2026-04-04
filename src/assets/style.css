@@ -239,6 +239,8 @@ details.fn-body > pre {
   margin: 0;
   border-radius: 0;
   overflow-x: auto;
+  background: rgba(0,0,0,.3);
+  padding: .75rem 1rem;
 }
 
 /* ── Fields table ── */
@@ -701,7 +703,8 @@ pre:hover .copy-btn { opacity: 1; }
 [data-theme="vscode-light"] .symbol-doc code,
 [data-theme="vscode-light"] .guide-content code    { background: #ececec; }
 [data-theme="vscode-light"] .symbol-doc pre,
-[data-theme="vscode-light"] .guide-content pre     { background: #ececec; }
+[data-theme="vscode-light"] .guide-content pre,
+[data-theme="vscode-light"] details.fn-body > pre  { background: #ececec; }
 [data-theme="vscode-light"] .symbol-decls .symbol  { border-color: rgba(0,0,0,.07); }
 [data-theme="vscode-light"] .hl-comment            { color: #008000; }
 [data-theme="vscode-light"] .fields-table td       { border-bottom-color: rgba(0,0,0,.06); }

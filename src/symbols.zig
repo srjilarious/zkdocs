@@ -211,6 +211,44 @@ fn nodeToSource(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) []const u8 {
     return tree.source[start_byte..end_byte];
 }
 
+/// Strip the common leading indentation from a multi-line source block.
+/// The first line is assumed to start at the token boundary (no leading
+/// whitespace). The indent to strip is the leading spaces/tabs on the first
+/// non-empty line after line 0.
+fn dedentBlock(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
+    // Measure indent from the first non-empty line after line 0.
+    var indent: usize = 0;
+    var i: usize = 0;
+    while (i < src.len and src[i] != '\n') i += 1;
+    if (i < src.len) i += 1; // skip \n
+    const line_start = i;
+    while (i < src.len and (src[i] == ' ' or src[i] == '\t')) i += 1;
+    if (i < src.len and src[i] != '\n') indent = i - line_start;
+    if (indent == 0) return allocator.dupe(u8, src);
+
+    var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
+    var lines = std.mem.splitScalar(u8, src, '\n');
+    var line_num: usize = 0;
+    while (lines.next()) |line| {
+        if (line_num > 0) try out.append(allocator, '\n');
+        if (line_num == 0) {
+            // First line: keep verbatim (starts with `{`).
+            try out.appendSlice(allocator, line);
+        } else if (line.len == 0) {
+            // Blank line: keep as empty.
+        } else {
+            // Strip up to `indent` leading spaces/tabs.
+            var strip: usize = 0;
+            while (strip < indent and strip < line.len and
+                (line[strip] == ' ' or line[strip] == '\t')) strip += 1;
+            try out.appendSlice(allocator, line[strip..]);
+        }
+        line_num += 1;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 fn isContainerTag(tag: std.zig.Ast.Node.Tag) bool {
     return switch (tag) {
         .container_decl,
@@ -413,7 +451,7 @@ fn extractFnSymbol(
 
     if (tree.nodeTag(node) == .fn_decl) {
         const body_node = tree.nodeData(node).node_and_node[1];
-        body_src = try allocator.dupe(u8, nodeToSource(tree.*, body_node));
+        body_src = try dedentBlock(allocator, nodeToSource(tree.*, body_node));
 
         if (return_type_src) |rts| {
             if (std.mem.eql(u8, rts, "type")) {
