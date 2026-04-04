@@ -900,7 +900,22 @@ fn renderVar(buf: *Buf, v: symbols.Variable) !void {
         try writeTypeSrc(buf, t, null);
         try buf.writeAll("</span>");
     }
+    if (v.value_src) |val| {
+        const is_multiline = std.mem.indexOfScalar(u8, val, '\n') != null;
+        if (!is_multiline) {
+            try buf.writeAll(" <span class=\"sym-eq\">=</span> <span class=\"sym-value\">");
+            try htmlEscape(buf, val);
+            try buf.writeAll("</span>");
+        }
+    }
     try buf.writeAll("</code></div>\n");
+    if (v.value_src) |val| {
+        if (std.mem.indexOfScalar(u8, val, '\n') != null) {
+            try buf.writeAll("<details class=\"sym-value-details\"><summary>value</summary><pre><code>");
+            try htmlEscape(buf, val);
+            try buf.writeAll("</code></pre></details>\n");
+        }
+    }
     if (v.doc) |doc| try writeDoc(buf, doc);
     try buf.writeAll("</div>\n");
 }

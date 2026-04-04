@@ -192,6 +192,32 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
 .param-name{ color: var(--str);  }
 a.type-link { color: var(--type); text-decoration: none; }
 a.type-link:hover { text-decoration: underline; }
+.sym-eq    { color: var(--muted); }
+.sym-value { color: var(--num);   }
+details.sym-value-details {
+  margin-top: .4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+details.sym-value-details > summary {
+  padding: .2rem .6rem;
+  cursor: pointer;
+  background: var(--bg-card);
+  font-size: .8rem;
+  color: var(--muted);
+  user-select: none;
+  list-style: none;
+}
+details.sym-value-details > summary::before { content: '▶ '; font-size: .7em; }
+details.sym-value-details[open] > summary::before { content: '▼ '; }
+details.sym-value-details > pre {
+  margin: 0;
+  border-radius: 0;
+  font-size: .82rem;
+  padding: .6rem .75rem;
+  overflow-x: auto;
+}
 
 /* ── Fields table ── */
 .fields-table {

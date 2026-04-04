@@ -47,8 +47,13 @@ pub const Container = struct {
 pub const Variable = struct {
     name: []const u8,
     type_src: ?[]const u8,
+    /// Initialiser source text, or null when the value was not captured.
+    /// Always null when `is_import` is true.
+    value_src: ?[]const u8,
     doc: ?[]const u8,
     is_pub: bool,
+    /// True when the initialiser is an `@import(...)` call.
+    is_import: bool,
 };
 
 pub const Symbol = struct {
@@ -294,6 +299,14 @@ fn getImportPath(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) ?[]const u8 {
     return inner;
 }
 
+/// Return true when `node` is any `@import(...)` call (relative or builtin).
+fn isImportNode(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) bool {
+    const tag = tree.nodeTag(node);
+    if (tag != .builtin_call_two and tag != .builtin_call_two_comma) return false;
+    const main_tok = tree.nodeMainToken(node);
+    return std.mem.eql(u8, tree.tokenSlice(main_tok), "@import");
+}
+
 fn deinitContainer(allocator: std.mem.Allocator, c: *Container) void {
     allocator.free(c.name);
     if (c.doc) |s| allocator.free(s);
@@ -323,6 +336,7 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
         .variable => if (sym.variable) |*v| {
             allocator.free(v.name);
             if (v.type_src) |s| allocator.free(s);
+            if (v.value_src) |s| allocator.free(s);
             if (v.doc) |s| allocator.free(s);
         },
         .container => if (sym.container) |*c| deinitContainer(allocator, c),
@@ -543,13 +557,27 @@ fn extractContainerSymbol(
                 else
                     null;
                 errdefer if (type_src) |s| allocator.free(s);
+                const nested_is_import = if (var_decl.ast.init_node.unwrap()) |in|
+                    isImportNode(tree.*, in)
+                else
+                    false;
+                const nested_value_src: ?[]const u8 = if (!nested_is_import)
+                    if (var_decl.ast.init_node.unwrap()) |in|
+                        try allocator.dupe(u8, nodeToSource(tree.*, in))
+                    else
+                        null
+                else
+                    null;
+                errdefer if (nested_value_src) |s| allocator.free(s);
                 try decls_list.append(allocator, .{
                     .kind = .variable,
                     .variable = .{
                         .name = nested_name,
                         .type_src = type_src,
+                        .value_src = nested_value_src,
                         .doc = nested_doc,
                         .is_pub = member_pub,
+                        .is_import = nested_is_import,
                     },
                 });
             },
@@ -700,13 +728,27 @@ pub fn extractModule(
                 else
                     null;
                 errdefer if (type_src) |s| allocator.free(s);
+                const is_import = if (var_decl.ast.init_node.unwrap()) |in|
+                    isImportNode(tree.*, in)
+                else
+                    false;
+                const value_src: ?[]const u8 = if (!is_import)
+                    if (var_decl.ast.init_node.unwrap()) |in|
+                        try allocator.dupe(u8, nodeToSource(tree.*, in))
+                    else
+                        null
+                else
+                    null;
+                errdefer if (value_src) |s| allocator.free(s);
                 try module.symbols.append(allocator, .{
                     .kind = .variable,
                     .variable = .{
                         .name = name,
                         .type_src = type_src,
+                        .value_src = value_src,
                         .doc = doc,
                         .is_pub = is_pub,
+                        .is_import = is_import,
                     },
                 });
             },
