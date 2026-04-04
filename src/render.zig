@@ -193,6 +193,8 @@ const Buf = struct {
     current_module: []const u8 = "",
     /// Slug of the guide rendered as index.html, if any.
     home_slug: ?[]const u8 = null,
+    /// When false (default), pub consts whose value is an @import are hidden.
+    show_imports: bool = false,
 
     fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
         return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider, .theme = theme };
@@ -619,7 +621,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
                 if (f.is_pub and f.generic_return == null) has_fns = true;
             },
             .variable => if (sym.variable) |v| {
-                if (v.is_pub) has_consts = true;
+                if (v.is_pub and (buf.show_imports or !v.is_import)) has_consts = true;
             },
             else => {},
         }
@@ -1051,6 +1053,9 @@ pub const SiteConf = struct {
     home_slug: ?[]const u8,
     /// Literate example pages (`"examples"` array in conf).
     examples: ?[]ExampleEntry = null,
+    /// When true, pub `@import` constants are shown in API docs.
+    /// Defaults to false (imports are hidden).
+    show_imports: bool = false,
 
     pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
         if (self.name) |n| allocator.free(n);
@@ -1223,6 +1228,8 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         examples = try exs.toOwnedSlice(allocator);
     };
 
+    const show_imports = if (obj.get("show_imports")) |v| v == .bool and v.bool else false;
+
     return .{
         .name = name,
         .sources = sources,
@@ -1232,6 +1239,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         .conf_dir = try allocator.dupe(u8, conf_dir),
         .home_slug = home_slug,
         .examples = examples,
+        .show_imports = show_imports,
     };
 }
 
@@ -1411,6 +1419,8 @@ pub fn renderSite(
     /// Absolute path to the zkdocs.conf file, or null when running without one.
     /// Used to record the conf mtime in the cache.
     conf_abs_path: ?[]const u8,
+    /// When true, pub @import constants are included in API docs.
+    show_imports: bool,
 ) !void {
     var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
     defer out_dir.close();
@@ -1583,6 +1593,7 @@ pub fn renderSite(
             buf.type_index = &type_index;
             buf.current_module = mod.name;
             buf.home_slug = home_slug;
+            buf.show_imports = show_imports;
 
             const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
             defer allocator.free(title);
@@ -1609,7 +1620,7 @@ pub fn renderSite(
                         if (f.is_pub and f.generic_return == null) has_fns = true;
                     },
                     .variable => if (sym.variable) |v| {
-                        if (v.is_pub) has_consts = true;
+                        if (v.is_pub and (show_imports or !v.is_import)) has_consts = true;
                     },
                     else => {},
                 }
@@ -1640,7 +1651,7 @@ pub fn renderSite(
                 try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
                 for (mod.symbols.items) |sym| {
                     if (sym.kind == .variable) if (sym.variable) |v| {
-                        if (v.is_pub) try renderVar(&buf, v);
+                        if (v.is_pub and (show_imports or !v.is_import)) try renderVar(&buf, v);
                     };
                 }
             }

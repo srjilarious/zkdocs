@@ -111,7 +111,8 @@ pub fn main() !void {
 
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
-        try render.renderSite(allocator, out_path, project_name, modules, guides, examples, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path);
+        const show_imports = if (site_conf) |sc| sc.show_imports else false;
+        try render.renderSite(allocator, out_path, project_name, modules, guides, examples, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(allocator, rp)
