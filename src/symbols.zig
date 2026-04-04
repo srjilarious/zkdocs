@@ -211,20 +211,26 @@ fn nodeToSource(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) []const u8 {
     return tree.source[start_byte..end_byte];
 }
 
-/// Strip the common leading indentation from a multi-line source block.
-/// The first line is assumed to start at the token boundary (no leading
-/// whitespace). The indent to strip is the leading spaces/tabs on the first
-/// non-empty line after line 0.
+/// Normalise a function body block for display.
+/// `src` starts with `{` (the body's opening brace token) and inner lines
+/// carry their full file-absolute indentation.  We strip the indentation of
+/// the *closing brace* line so that `{` and `}` sit at column 0 while the
+/// body content retains one level of relative indent.
 fn dedentBlock(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
-    // Measure indent from the first non-empty line after line 0.
-    var indent: usize = 0;
-    var i: usize = 0;
-    while (i < src.len and src[i] != '\n') i += 1;
-    if (i < src.len) i += 1; // skip \n
-    const line_start = i;
-    while (i < src.len and (src[i] == ' ' or src[i] == '\t')) i += 1;
-    if (i < src.len and src[i] != '\n') indent = i - line_start;
-    if (indent == 0) return allocator.dupe(u8, src);
+    // Find the indent of the last non-empty line (the closing `}`).
+    var strip: usize = 0;
+    var pos: usize = src.len;
+    // Walk backwards past any trailing newline.
+    while (pos > 0 and src[pos - 1] == '\n') pos -= 1;
+    // Walk back to the start of this last line.
+    const line_end = pos;
+    while (pos > 0 and src[pos - 1] != '\n') pos -= 1;
+    const last_line = src[pos..line_end];
+    // Count leading spaces/tabs on the closing brace line.
+    for (last_line) |c| {
+        if (c == ' ' or c == '\t') strip += 1 else break;
+    }
+    if (strip == 0) return allocator.dupe(u8, src);
 
     var out: std.ArrayList(u8) = .{};
     errdefer out.deinit(allocator);
@@ -233,16 +239,16 @@ fn dedentBlock(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
     while (lines.next()) |line| {
         if (line_num > 0) try out.append(allocator, '\n');
         if (line_num == 0) {
-            // First line: keep verbatim (starts with `{`).
+            // Opening `{` line: always at col 0 in the slice, keep verbatim.
             try out.appendSlice(allocator, line);
         } else if (line.len == 0) {
-            // Blank line: keep as empty.
+            // Blank line: keep empty.
         } else {
-            // Strip up to `indent` leading spaces/tabs.
-            var strip: usize = 0;
-            while (strip < indent and strip < line.len and
-                (line[strip] == ' ' or line[strip] == '\t')) strip += 1;
-            try out.appendSlice(allocator, line[strip..]);
+            // Strip up to `strip` leading spaces/tabs.
+            var s: usize = 0;
+            while (s < strip and s < line.len and
+                (line[s] == ' ' or line[s] == '\t')) s += 1;
+            try out.appendSlice(allocator, line[s..]);
         }
         line_num += 1;
     }
@@ -466,6 +472,10 @@ fn extractFnSymbol(
                         is_pub,
                     );
                     generic_return = sym.container;
+                    // Body of a generic function is the returned container's
+                    // definition, not useful to show — suppress it.
+                    if (body_src) |s| allocator.free(s);
+                    body_src = null;
                 }
             }
         }
