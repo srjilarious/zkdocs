@@ -79,17 +79,14 @@ pub fn main() !void {
     };
 
     if (args.optionVal("out")) |out_path| {
-        const guides: []render.GuideNavItem =
-            if (site_conf) |*sc| sc.guides else &.{};
-        const examples: []render.ExampleEntry =
-            if (site_conf) |*sc| sc.examples orelse &.{} else &.{};
+        const pages: []render.PageNavItem =
+            if (site_conf) |*sc| sc.pages else &.{};
 
-        const has_guides = guides.len > 0;
+        const has_pages = pages.len > 0;
         const total_steps: usize =
             @as(usize, if (root_path != null) 1 else 0) + // extracting symbols
             2 + // writing index + api
-            @as(usize, if (has_guides) 1 else 0) +
-            examples.len;
+            @as(usize, if (has_pages) 1 else 0);
         var progress = render.Progress.init(total_steps);
 
         // Load the incremental build cache (returns empty cache on first run).
@@ -112,7 +109,7 @@ pub fn main() !void {
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
         const show_imports = if (site_conf) |sc| sc.show_imports else false;
-        try render.renderSite(allocator, out_path, project_name, modules, guides, examples, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports);
+        try render.renderSite(allocator, out_path, project_name, modules, pages, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(allocator, rp)

@@ -72,70 +72,57 @@ pub const Progress = struct {
 // Public types
 // ---------------------------------------------------------------------------
 
-pub const GuideEntry = struct {
-    slug: []const u8, // URL path, e.g. "getting-started" or "reference/cli"
+pub const PageMode = enum {
+    markdown, // .md file — always rendered as markdown HTML
+    zig_prose, // .zig file — prose+code segments view (default), with Raw view toggle
+    zig_raw, // .zig file — raw syntax-highlighted source only, no prose toggle
+};
+
+pub const PageEntry = struct {
+    slug: []const u8,
     title: []const u8,
-    content: []const u8,
-    /// Absolute path to the source .md file; used for cache mtime checks.
-    /// Empty string when the entry was not loaded from a file.
+    content: []const u8, // markdown text or zig source
     src_path: []const u8,
+    mode: PageMode,
 };
 
-pub const GuideSection = struct {
+pub const PageSection = struct {
     title: []const u8,
-    entries: []GuideEntry,
+    items: []PageNavItem, // recursive — sections can contain sub-sections
 };
 
-/// A top-level navigation item: either a standalone guide or a titled section.
-pub const GuideNavItem = union(enum) {
-    entry: GuideEntry,
-    section: GuideSection,
+pub const PageNavItem = union(enum) {
+    entry: PageEntry,
+    section: PageSection,
 };
 
-fn freeGuideEntry(allocator: std.mem.Allocator, e: *GuideEntry) void {
+fn freePageEntry(allocator: std.mem.Allocator, e: *PageEntry) void {
     allocator.free(e.slug);
     allocator.free(e.title);
     allocator.free(e.content);
     if (e.src_path.len > 0) allocator.free(e.src_path);
 }
 
-fn freeNavItem(allocator: std.mem.Allocator, item: *GuideNavItem) void {
+fn freePageNavItem(allocator: std.mem.Allocator, item: *PageNavItem) void {
     switch (item.*) {
-        .entry => |*e| freeGuideEntry(allocator, e),
+        .entry => |*e| freePageEntry(allocator, e),
         .section => |*s| {
             allocator.free(s.title);
-            for (s.entries) |*e| freeGuideEntry(allocator, e);
-            allocator.free(s.entries);
+            for (s.items) |*it| freePageNavItem(allocator, it);
+            allocator.free(s.items);
         },
     }
 }
 
-pub fn freeGuides(allocator: std.mem.Allocator, guides: []GuideNavItem) void {
-    for (guides) |*item| freeNavItem(allocator, item);
-    allocator.free(guides);
+pub fn freePages(allocator: std.mem.Allocator, pages: []PageNavItem) void {
+    for (pages) |*item| freePageNavItem(allocator, item);
+    allocator.free(pages);
 }
 
-/// A single literate example page loaded from a `.zig` source file.
-pub const ExampleEntry = struct {
-    slug: []const u8,
-    title: []const u8,
-    /// Absolute path to the source .zig file; used for cache mtime checks.
-    src_path: []const u8,
-    /// Raw source content (loaded at conf-parse time).
-    src: []const u8,
-
-    pub fn deinit(self: *ExampleEntry, allocator: std.mem.Allocator) void {
-        allocator.free(self.slug);
-        allocator.free(self.title);
-        allocator.free(self.src_path);
-        allocator.free(self.src);
-    }
-};
-
-fn guidesHaveEntries(guides: []const GuideNavItem) bool {
-    for (guides) |item| switch (item) {
+pub fn pagesHaveEntries(pages: []const PageNavItem) bool {
+    for (pages) |item| switch (item) {
         .entry => return true,
-        .section => |s| if (s.entries.len > 0) return true,
+        .section => |s| if (pagesHaveEntries(s.items)) return true,
     };
     return false;
 }
@@ -467,6 +454,37 @@ fn writeModuleNavItem(
 // Page header / nav / footer
 // ---------------------------------------------------------------------------
 
+fn writePageNavItems(
+    buf: *Buf,
+    items: []const PageNavItem,
+    active_page: ?[]const u8,
+    prefix: []const u8,
+) !void {
+    for (items) |item| {
+        switch (item) {
+            .entry => |e| {
+                const active = if (active_page) |ap| std.mem.eql(u8, ap, e.slug) else false;
+                const cls: []const u8 = if (active) " class=\"active\"" else "";
+                const is_home = if (buf.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                if (is_home) {
+                    try buf.print("<li><a href=\"{s}/index.html\"{s}>", .{ prefix, cls });
+                } else {
+                    try buf.print("<li><a href=\"{s}/page/{s}.html\"{s}>", .{ prefix, e.slug, cls });
+                }
+                try htmlEscape(buf, e.title);
+                try buf.writeAll("</a></li>\n");
+            },
+            .section => |s| {
+                try buf.writeAll("<details class=\"nav-subsection\" open>\n<summary>");
+                try htmlEscape(buf, s.title);
+                try buf.writeAll("</summary>\n<ul>\n");
+                try writePageNavItems(buf, s.items, active_page, prefix);
+                try buf.writeAll("</ul>\n</details>\n");
+            },
+        }
+    }
+}
+
 /// Write the page <head>, <body>, the left nav sidebar, and open <main>.
 /// The per-page TOC aside is written after the main content via writeApiToc / writeGuideToc.
 fn writeHeader(
@@ -474,11 +492,9 @@ fn writeHeader(
     title: []const u8,
     project_name: []const u8,
     mods: []const symbols.Module,
-    guides: []const GuideNavItem,
-    examples: []const ExampleEntry,
+    pages: []const PageNavItem,
     active_module: ?[]const u8,
-    active_guide: ?[]const u8,
-    active_example: ?[]const u8,
+    active_page: ?[]const u8,
     prefix: []const u8,
 ) !void {
     try buf.writeAll("<!DOCTYPE html>\n<html lang=\"en\"");
@@ -528,59 +544,9 @@ fn writeHeader(
         \\
     );
 
-    if (guidesHaveEntries(guides)) {
-        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Guides</summary>\n<ul>\n");
-        for (guides) |item| {
-            switch (item) {
-                .entry => |e| {
-                    const active = if (active_guide) |ag| std.mem.eql(u8, ag, e.slug) else false;
-                    const cls: []const u8 = if (active) " class=\"active\"" else "";
-                    const is_home = if (buf.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
-                    if (is_home) {
-                        try buf.print("<li><a href=\"{s}/index.html\"{s}>", .{ prefix, cls });
-                    } else {
-                        try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
-                    }
-                    try htmlEscape(buf, e.title);
-                    try buf.writeAll("</a></li>\n");
-                },
-                .section => |s| {
-                    try buf.writeAll("<details class=\"nav-subsection\" open>\n<summary>");
-                    try htmlEscape(buf, s.title);
-                    try buf.writeAll("</summary>\n<ul>\n");
-                    for (s.entries) |e| {
-                        const active = if (active_guide) |ag| std.mem.eql(u8, ag, e.slug) else false;
-                        const cls: []const u8 = if (active) " class=\"active\"" else "";
-                        const is_home = if (buf.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
-                        if (is_home) {
-                            try buf.print("<li><a href=\"{s}/index.html\"{s}>", .{ prefix, cls });
-                        } else {
-                            try buf.print("<li><a href=\"{s}/guide/{s}.html\"{s}>", .{ prefix, e.slug, cls });
-                        }
-                        try htmlEscape(buf, e.title);
-                        try buf.writeAll("</a></li>\n");
-                    }
-                    try buf.writeAll("</ul>\n</details>\n");
-                },
-            }
-        }
-        try buf.writeAll("</ul>\n</details>\n");
-    }
-
-    if (examples.len > 0) {
-        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Examples</summary>\n<ul>\n");
-        for (examples) |e| {
-            const is_active = if (active_example) |ae| std.mem.eql(u8, ae, e.slug) else false;
-            const ex_href = try std.fmt.allocPrint(buf.alloc, "{s}/example/{s}.html", .{ prefix, e.slug });
-            defer buf.alloc.free(ex_href);
-            if (is_active) {
-                try buf.print("<li><a href=\"{s}\" class=\"active\">", .{ex_href});
-            } else {
-                try buf.print("<li><a href=\"{s}\">", .{ex_href});
-            }
-            try htmlEscape(buf, e.title);
-            try buf.writeAll("</a></li>\n");
-        }
+    if (pagesHaveEntries(pages)) {
+        try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Pages</summary>\n<ul>\n");
+        try writePageNavItems(buf, pages, active_page, prefix);
         try buf.writeAll("</ul>\n</details>\n");
     }
 
@@ -942,7 +908,7 @@ fn renderVar(buf: *Buf, v: symbols.Variable) !void {
 }
 
 // ---------------------------------------------------------------------------
-// Guide page loading
+// Page entry loading
 // ---------------------------------------------------------------------------
 
 fn extractTitle(content: []const u8, fallback: []const u8) []const u8 {
@@ -956,11 +922,15 @@ fn extractTitle(content: []const u8, fallback: []const u8) []const u8 {
     return fallback;
 }
 
-fn loadGuideEntry(
+fn loadPageEntry(
     allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
     config_dir: []const u8,
-) !GuideEntry {
+    /// Overrides per-entry mode inference. Pass null to auto-detect from extension.
+    force_mode: ?PageMode,
+    /// When true, all .zig files default to zig_raw instead of zig_prose.
+    prose_disabled: bool,
+) !PageEntry {
     const src_val = obj.get("src") orelse return error.MissingField;
     if (src_val != .string) return error.InvalidField;
     const src = src_val.string;
@@ -975,20 +945,41 @@ fn loadGuideEntry(
     const content = try std.fs.cwd().readFileAlloc(allocator, full_path, 4 * 1024 * 1024);
     errdefer allocator.free(content);
 
-    // Slug = src with .md stripped
-    const slug_src = if (std.mem.endsWith(u8, src, ".md")) src[0 .. src.len - 3] else src;
+    const is_zig = std.mem.endsWith(u8, src, ".zig");
+    const is_md = std.mem.endsWith(u8, src, ".md");
+
+    // Determine mode: forced > per-entry "raw" flag > prose_disabled global > extension default.
+    const mode: PageMode = if (force_mode) |fm|
+        fm
+    else if (is_zig) blk: {
+        const raw_flag = if (obj.get("raw")) |rv| rv == .bool and rv.bool else false;
+        break :blk if (prose_disabled or raw_flag) .zig_raw else .zig_prose;
+    } else if (is_md)
+        .markdown
+    else
+        .markdown;
+
+    // Slug = src with extension stripped
+    const slug_src = if (is_md)
+        src[0 .. src.len - 3]
+    else if (is_zig)
+        std.fs.path.stem(src)
+    else
+        src;
     const slug = try allocator.dupe(u8, slug_src);
     errdefer allocator.free(slug);
 
-    // Title: explicit config value, or extracted H1, or file stem
+    // Title: explicit config value, or extracted H1 (md only), or file stem
     const stem = std.fs.path.stem(src);
     const title = if (obj.get("title")) |tv|
-        try allocator.dupe(u8, if (tv == .string) tv.string else extractTitle(content, stem))
+        try allocator.dupe(u8, if (tv == .string) tv.string else if (is_md) extractTitle(content, stem) else stem)
+    else if (is_md)
+        try allocator.dupe(u8, extractTitle(content, stem))
     else
-        try allocator.dupe(u8, extractTitle(content, stem));
+        try allocator.dupe(u8, stem);
     errdefer allocator.free(title);
 
-    return .{ .slug = slug, .title = title, .content = content, .src_path = src_path };
+    return .{ .slug = slug, .title = title, .content = content, .src_path = src_path, .mode = mode };
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,14 +1037,12 @@ pub const SiteConf = struct {
     theme: Theme,
     /// Emoji provider string (`"emoji"` key), or null if absent.
     emoji: ?[]const u8,
-    /// Parsed guide nav items (`"guides"` array).
-    guides: []GuideNavItem,
+    /// Unified page nav items from `"guides"` and `"examples"` arrays.
+    pages: []PageNavItem,
     /// Directory containing the conf file; used to resolve relative image paths.
     conf_dir: []const u8,
-    /// Slug of the guide to render as `index.html` (`"home"` key), or null.
+    /// Slug of the page to render as `index.html` (`"home"` key), or null.
     home_slug: ?[]const u8,
-    /// Literate example pages (`"examples"` array in conf).
-    examples: ?[]ExampleEntry = null,
     /// When true, pub `@import` constants are shown in API docs.
     /// Defaults to false (imports are hidden).
     show_imports: bool = false,
@@ -1065,15 +1054,51 @@ pub const SiteConf = struct {
             allocator.free(srcs);
         }
         if (self.emoji) |e| allocator.free(e);
-        freeGuides(allocator, self.guides);
+        freePages(allocator, self.pages);
         allocator.free(self.conf_dir);
         if (self.home_slug) |hs| allocator.free(hs);
-        if (self.examples) |exs| {
-            for (exs) |*e| e.deinit(allocator);
-            allocator.free(exs);
-        }
     }
 };
+
+/// Recursively load a JSON array of page items into `items_out`.
+/// Sections use the `"pages"` key for children (new format).
+fn loadPageItemsFromArray(
+    allocator: std.mem.Allocator,
+    array: std.json.Array,
+    config_dir: []const u8,
+    prose_disabled: bool,
+    items_out: *std.ArrayList(PageNavItem),
+) !void {
+    for (array.items) |json_item| {
+        if (json_item != .object) continue;
+        const item_obj = json_item.object;
+        if (item_obj.get("section")) |sec_val| {
+            if (sec_val != .string) continue;
+            const sec_title = try allocator.dupe(u8, sec_val.string);
+            errdefer allocator.free(sec_title);
+            var sec_items: std.ArrayList(PageNavItem) = .{};
+            errdefer {
+                for (sec_items.items) |*it| freePageNavItem(allocator, it);
+                sec_items.deinit(allocator);
+            }
+            // Support both "pages" (new) and "entries" (backward compat) as child key.
+            const child_key: []const u8 = if (item_obj.get("pages") != null) "pages" else "entries";
+            if (item_obj.get(child_key)) |cv| if (cv == .array) {
+                try loadPageItemsFromArray(allocator, cv.array, config_dir, prose_disabled, &sec_items);
+            };
+            const sec_slice = try sec_items.toOwnedSlice(allocator);
+            errdefer {
+                for (sec_slice) |*it| freePageNavItem(allocator, it);
+                allocator.free(sec_slice);
+            }
+            try items_out.append(allocator, .{ .section = .{ .title = sec_title, .items = sec_slice } });
+        } else if (item_obj.get("src") != null) {
+            const e = try loadPageEntry(allocator, item_obj, config_dir, null, prose_disabled);
+            errdefer freePageEntry(allocator, @constCast(&e));
+            try items_out.append(allocator, .{ .entry = e });
+        }
+    }
+}
 
 /// Parse a `zkdocs.conf` JSON file and return a `SiteConf`.
 /// The caller owns the result and must call `result.deinit(allocator)`.
@@ -1130,104 +1155,82 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         null;
     errdefer if (ep) |e| allocator.free(e);
 
-    // --- guides ---
-    var guides: []GuideNavItem = &.{};
-    if (obj.get("guides")) |gv| if (gv == .array) {
-        var items = std.ArrayList(GuideNavItem){};
-        errdefer {
-            for (items.items) |*it| freeNavItem(allocator, it);
-            items.deinit(allocator);
-        }
-        for (gv.array.items) |json_item| {
-            if (json_item != .object) continue;
-            const item_obj = json_item.object;
-            if (item_obj.get("section")) |sec_val| {
-                if (sec_val != .string) continue;
-                const sec_title = try allocator.dupe(u8, sec_val.string);
-                errdefer allocator.free(sec_title);
-                var sec_entries = std.ArrayList(GuideEntry){};
-                errdefer {
-                    for (sec_entries.items) |*e| freeGuideEntry(allocator, e);
-                    sec_entries.deinit(allocator);
-                }
-                if (item_obj.get("entries")) |ev| if (ev == .array) {
-                    for (ev.array.items) |ei| {
-                        if (ei != .object) continue;
-                        const e = try loadGuideEntry(allocator, ei.object, conf_dir);
-                        errdefer freeGuideEntry(allocator, @constCast(&e));
-                        try sec_entries.append(allocator, e);
+    // --- pages ---
+    // Global prose flag: "prose": false disables prose rendering for all .zig pages.
+    const prose_disabled = if (obj.get("prose")) |v| v == .bool and !v.bool else false;
+
+    var page_items = std.ArrayList(PageNavItem){};
+    errdefer {
+        for (page_items.items) |*it| freePageNavItem(allocator, it);
+        page_items.deinit(allocator);
+    }
+
+    if (obj.get("pages")) |pv| if (pv == .array) {
+        // New unified "pages" format: extension determines mode, sections use "pages" key.
+        try loadPageItemsFromArray(allocator, pv.array, conf_dir, prose_disabled, &page_items);
+    } else {} else {
+        // Backward-compat: read old "guides" + "examples" format.
+        if (obj.get("guides")) |gv| if (gv == .array) {
+            for (gv.array.items) |json_item| {
+                if (json_item != .object) continue;
+                const item_obj = json_item.object;
+                if (item_obj.get("section")) |sec_val| {
+                    if (sec_val != .string) continue;
+                    const sec_title = try allocator.dupe(u8, sec_val.string);
+                    errdefer allocator.free(sec_title);
+                    var sec_entries = std.ArrayList(PageNavItem){};
+                    errdefer {
+                        for (sec_entries.items) |*e| freePageNavItem(allocator, e);
+                        sec_entries.deinit(allocator);
                     }
-                };
-                const sec_slice = try sec_entries.toOwnedSlice(allocator);
-                errdefer {
-                    for (sec_slice) |*e| freeGuideEntry(allocator, e);
-                    allocator.free(sec_slice);
+                    if (item_obj.get("entries")) |ev| if (ev == .array) {
+                        for (ev.array.items) |ei| {
+                            if (ei != .object) continue;
+                            const e = try loadPageEntry(allocator, ei.object, conf_dir, .markdown, false);
+                            errdefer freePageEntry(allocator, @constCast(&e));
+                            try sec_entries.append(allocator, .{ .entry = e });
+                        }
+                    };
+                    const sec_slice = try sec_entries.toOwnedSlice(allocator);
+                    errdefer {
+                        for (sec_slice) |*e| freePageNavItem(allocator, e);
+                        allocator.free(sec_slice);
+                    }
+                    try page_items.append(allocator, .{ .section = .{ .title = sec_title, .items = sec_slice } });
+                } else if (item_obj.get("src") != null) {
+                    const e = try loadPageEntry(allocator, item_obj, conf_dir, .markdown, false);
+                    errdefer freePageEntry(allocator, @constCast(&e));
+                    try page_items.append(allocator, .{ .entry = e });
                 }
-                try items.append(allocator, .{ .section = .{ .title = sec_title, .entries = sec_slice } });
-            } else if (item_obj.get("src") != null) {
-                const e = try loadGuideEntry(allocator, item_obj, conf_dir);
-                errdefer freeGuideEntry(allocator, @constCast(&e));
-                try items.append(allocator, .{ .entry = e });
             }
-        }
-        guides = try items.toOwnedSlice(allocator);
-    };
+        };
+        if (obj.get("examples")) |ev| if (ev == .array) {
+            for (ev.array.items) |item| {
+                if (item != .object) continue;
+                const e = try loadPageEntry(allocator, item.object, conf_dir, .zig_prose, prose_disabled);
+                errdefer freePageEntry(allocator, @constCast(&e));
+                try page_items.append(allocator, .{ .entry = e });
+            }
+        };
+    }
+
+    const pages = try page_items.toOwnedSlice(allocator);
+    errdefer freePages(allocator, pages);
 
     // --- home ---
     // Accept either a slug ("getting-started") or a src filename ("getting-started.md").
     const home_slug: ?[]const u8 = if (obj.get("home")) |v| blk: {
         if (v != .string) break :blk null;
         const home_src = v.string;
-        const home_slug_str = if (std.mem.endsWith(u8, home_src, ".md")) home_src[0 .. home_src.len - 3] else home_src;
+        const home_slug_str = if (std.mem.endsWith(u8, home_src, ".md"))
+            home_src[0 .. home_src.len - 3]
+        else if (std.mem.endsWith(u8, home_src, ".zig"))
+            std.fs.path.stem(home_src)
+        else
+            home_src;
         break :blk try allocator.dupe(u8, home_slug_str);
     } else null;
     errdefer if (home_slug) |hs| allocator.free(hs);
-
-    // --- examples ---
-    var examples: ?[]ExampleEntry = null;
-    errdefer if (examples) |exs| {
-        for (exs) |*e| e.deinit(allocator);
-        allocator.free(exs);
-    };
-    if (obj.get("examples")) |ev| if (ev == .array) {
-        var exs: std.ArrayList(ExampleEntry) = .{};
-        errdefer {
-            for (exs.items) |*e| e.deinit(allocator);
-            exs.deinit(allocator);
-        }
-        for (ev.array.items) |item| {
-            if (item != .object) continue;
-            const eobj = item.object;
-            const title_v = eobj.get("title") orelse continue;
-            const src_v = eobj.get("src") orelse continue;
-            if (title_v != .string or src_v != .string) continue;
-
-            const full_path = try std.fs.path.join(allocator, &.{ conf_dir, src_v.string });
-            defer allocator.free(full_path);
-
-            const src_path = cache_mod.absPath(allocator, full_path) catch
-                try allocator.dupe(u8, full_path);
-            errdefer allocator.free(src_path);
-
-            const src = try std.fs.cwd().readFileAlloc(allocator, full_path, 4 * 1024 * 1024);
-            errdefer allocator.free(src);
-
-            const stem = std.fs.path.stem(src_v.string);
-            const slug = try allocator.dupe(u8, stem);
-            errdefer allocator.free(slug);
-
-            const title = try allocator.dupe(u8, title_v.string);
-            errdefer allocator.free(title);
-
-            try exs.append(allocator, .{
-                .slug = slug,
-                .title = title,
-                .src_path = src_path,
-                .src = src,
-            });
-        }
-        examples = try exs.toOwnedSlice(allocator);
-    };
 
     const show_imports = if (obj.get("show_imports")) |v| v == .bool and v.bool else false;
 
@@ -1236,10 +1239,9 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         .sources = sources,
         .theme = theme,
         .emoji = ep,
-        .guides = guides,
+        .pages = pages,
         .conf_dir = try allocator.dupe(u8, conf_dir),
         .home_slug = home_slug,
-        .examples = examples,
         .show_imports = show_imports,
     };
 }
@@ -1296,8 +1298,7 @@ fn writeSearchIndex(
     allocator: std.mem.Allocator,
     out_dir: *std.fs.Dir,
     mods: []const symbols.Module,
-    guides: []const GuideNavItem,
-    examples: []const ExampleEntry,
+    pages: []const PageNavItem,
     home_slug: ?[]const u8,
 ) !void {
     var buf: std.ArrayList(u8) = .{};
@@ -1307,39 +1308,42 @@ fn writeSearchIndex(
     try buf.appendSlice(allocator, "window.ZKDOCS_SEARCH_INDEX=[");
     var id: usize = 0;
 
-    // Guide entries
-    for (guides) |item| {
+    // Page entries (guides and examples unified)
+    for (pages) |item| {
         switch (item) {
             .entry => |e| {
                 const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
                 const url = if (is_home)
                     try allocator.dupe(u8, "index.html")
                 else
-                    try std.fmt.allocPrint(allocator, "guide/{s}.html", .{e.slug});
+                    try std.fmt.allocPrint(allocator, "page/{s}.html", .{e.slug});
                 defer allocator.free(url);
+                const doc_type: []const u8 = switch (e.mode) {
+                    .markdown => "guide",
+                    .zig_prose, .zig_raw => "example",
+                };
                 if (id > 0) try buf.append(allocator, ',');
-                try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, "guide");
+                try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, doc_type);
                 id += 1;
             },
             .section => |s| {
-                for (s.entries) |e| {
-                    const url = try std.fmt.allocPrint(allocator, "guide/{s}.html", .{e.slug});
+                for (s.items) |sub_item| {
+                    const e = switch (sub_item) {
+                        .entry => |en| en,
+                        .section => continue,
+                    };
+                    const url = try std.fmt.allocPrint(allocator, "page/{s}.html", .{e.slug});
                     defer allocator.free(url);
+                    const doc_type: []const u8 = switch (e.mode) {
+                        .markdown => "guide",
+                        .zig_prose, .zig_raw => "example",
+                    };
                     if (id > 0) try buf.append(allocator, ',');
-                    try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, "guide");
+                    try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, doc_type);
                     id += 1;
                 }
             },
         }
-    }
-
-    // Example pages
-    for (examples) |e| {
-        const url = try std.fmt.allocPrint(allocator, "example/{s}.html", .{e.slug});
-        defer allocator.free(url);
-        if (id > 0) try buf.append(allocator, ',');
-        try appendSearchDoc(&buf, allocator, id, e.title, e.src, url, "example");
-        id += 1;
     }
 
     // API symbols
@@ -1395,24 +1399,22 @@ fn writeSearchIndex(
 ///   out_path/
 ///     index.html
 ///     api/<module>.html     (one per module, pub symbols only)
-///     guide/<slug>.html     (one per guide entry in zkdocs.conf)
+///     page/<slug>.html      (one per page entry in zkdocs.conf)
 pub fn renderSite(
     allocator: std.mem.Allocator,
     out_path: []const u8,
     project_name: []const u8,
     mods: []const symbols.Module,
-    /// Guide nav items loaded from `zkdocs.conf`. Not freed by this function.
-    guides: []const GuideNavItem,
-    /// Literate example pages loaded from `zkdocs.conf`. Not freed by this function.
-    examples: []const ExampleEntry,
+    /// Unified page nav items (guides + examples) from `zkdocs.conf`. Not freed by this function.
+    pages: []const PageNavItem,
     emoji_provider: emoji.Provider,
     theme: Theme,
     progress: *Progress,
-    /// Directory of the conf file; used to resolve relative image paths in guides.
+    /// Directory of the conf file; used to resolve relative image paths in pages.
     /// Pass null when running without a conf file.
     conf_dir: ?[]const u8,
-    /// Slug of the guide to render as `index.html`. When set the default module
-    /// listing is replaced by that guide's content.
+    /// Slug of the page to render as `index.html`. When set the default module
+    /// listing is replaced by that page's content.
     home_slug: ?[]const u8,
     /// Mutable build cache used to skip unchanged outputs.  The caller owns
     /// the cache and must call `cache.save` (or discard) after this returns.
@@ -1460,9 +1462,9 @@ pub fn renderSite(
         defer f.close();
         try f.writeAll(SEARCH_JS);
     }
-    try writeSearchIndex(allocator, &out_dir, mods, guides, examples, home_slug);
+    try writeSearchIndex(allocator, &out_dir, mods, pages, home_slug);
 
-    if (guidesHaveEntries(guides)) try out_dir.makePath("guide");
+    if (pagesHaveEntries(pages)) try out_dir.makePath("page");
 
     // Build type index once for cross-module type linking.
     var type_index = try buildTypeIndex(allocator, mods);
@@ -1470,13 +1472,13 @@ pub fn renderSite(
 
     // ── index.html ──────────────────────────────────────────────────────────
 
-    // Find the home guide entry if one is designated.
-    const home_entry: ?GuideEntry = blk: {
+    // Find the home page entry if one is designated.
+    const home_entry: ?PageEntry = blk: {
         const hs = home_slug orelse break :blk null;
-        for (guides) |item| switch (item) {
+        for (pages) |item| switch (item) {
             .entry => |e| if (std.mem.eql(u8, e.slug, hs)) break :blk e,
-            .section => |s| for (s.entries) |e| {
-                if (std.mem.eql(u8, e.slug, hs)) break :blk e;
+            .section => |s| for (s.items) |sub| {
+                if (sub == .entry and std.mem.eql(u8, sub.entry.slug, hs)) break :blk sub.entry;
             },
         };
         break :blk null;
@@ -1495,14 +1497,17 @@ pub fn renderSite(
 
     if (conf_changed or sources_changed or home_changed) {
         if (home_entry) |he| {
-            // Render the designated guide as index.html.
-            try renderGuidePage(allocator, &out_dir, he, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, true, cache);
+            // Render the designated page as index.html.
+            switch (he.mode) {
+                .markdown => try renderMarkdownPage(allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, true, cache),
+                .zig_prose, .zig_raw => try renderZigPage(allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, home_slug, true),
+            }
         } else {
             var buf = Buf.init(allocator, emoji_provider, theme);
             defer buf.deinit();
             buf.home_slug = home_slug;
 
-            try writeHeader(&buf, project_name, project_name, mods, guides, examples, null, null, null, ".");
+            try writeHeader(&buf, project_name, project_name, mods, pages, null, null, ".");
 
             try buf.writeAll("<h1>");
             try htmlEscape(&buf, project_name);
@@ -1539,15 +1544,15 @@ pub fn renderSite(
                 try buf.writeAll("</ul>\n");
             }
 
-            if (guidesHaveEntries(guides)) {
-                try buf.writeAll("<h2>Guides</h2>\n<ul class=\"module-list\">\n");
-                for (guides) |item| switch (item) {
+            if (pagesHaveEntries(pages)) {
+                try buf.writeAll("<h2>Pages</h2>\n<ul class=\"module-list\">\n");
+                for (pages) |item| switch (item) {
                     .entry => |e| {
                         const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
                         if (is_home) {
                             try buf.print("<li><a href=\"./index.html\">", .{});
                         } else {
-                            try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
+                            try buf.print("<li><a href=\"./page/{s}.html\">", .{e.slug});
                         }
                         try htmlEscape(&buf, e.title);
                         try buf.writeAll("</a></li>\n");
@@ -1556,11 +1561,14 @@ pub fn renderSite(
                         try buf.writeAll("<li><strong>");
                         try htmlEscape(&buf, s.title);
                         try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
-                        for (s.entries) |e| {
-                            try buf.print("<li><a href=\"./guide/{s}.html\">", .{e.slug});
-                            try htmlEscape(&buf, e.title);
-                            try buf.writeAll("</a></li>\n");
-                        }
+                        for (s.items) |sub| switch (sub) {
+                            .entry => |e| {
+                                try buf.print("<li><a href=\"./page/{s}.html\">", .{e.slug});
+                                try htmlEscape(&buf, e.title);
+                                try buf.writeAll("</a></li>\n");
+                            },
+                            .section => {},
+                        };
                         try buf.writeAll("</ul></li>\n");
                     },
                 };
@@ -1572,7 +1580,7 @@ pub fn renderSite(
             const file = try out_dir.createFile("index.html", .{});
             defer file.close();
             try buf.flush(file);
-        } // end else (no home guide)
+        } // end else (no home page)
     } // end if (conf_changed or sources_changed)
 
     // ── api/<module>.html ────────────────────────────────────────────────────
@@ -1599,7 +1607,7 @@ pub fn renderSite(
             const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
             defer allocator.free(title);
 
-            try writeHeader(&buf, title, project_name, mods, guides, examples, mod.name, null, null, "..");
+            try writeHeader(&buf, title, project_name, mods, pages, mod.name, null, "..");
 
             try buf.writeAll("<h1>");
             try htmlEscape(&buf, mod.name);
@@ -1669,63 +1677,61 @@ pub fn renderSite(
         if (mods.len > 0) Progress.endFiles();
     }
 
-    // ── guide pages ──────────────────────────────────────────────────────────
-    if (guidesHaveEntries(guides)) {
-        var n_guides: usize = 0;
-        for (guides) |item| switch (item) {
-            .entry => n_guides += 1,
-            .section => |s| n_guides += s.entries.len,
+    // ── page/ pages ──────────────────────────────────────────────────────────
+    if (pagesHaveEntries(pages)) {
+        var n_pages: usize = 0;
+        for (pages) |item| switch (item) {
+            .entry => n_pages += 1,
+            .section => |s| for (s.items) |sub| {
+                if (sub == .entry) n_pages += 1;
+            },
         };
         var label_buf: [64]u8 = undefined;
-        const label = std.fmt.bufPrint(&label_buf, "rendering guides ({d} page{s})", .{
-            n_guides, if (n_guides == 1) "" else "s",
-        }) catch "rendering guides";
+        const label = std.fmt.bufPrint(&label_buf, "rendering pages ({d} page{s})", .{
+            n_pages, if (n_pages == 1) "" else "s",
+        }) catch "rendering pages";
         progress.begin(label);
 
-        for (guides) |item| switch (item) {
+        for (pages) |item| switch (item) {
             .entry => |e| {
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
-                // Skip if the guide source, conf, and assets are all unchanged.
+                // Skip if the page source, conf, and assets are all unchanged.
                 if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
                     continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, false, cache);
+                switch (e.mode) {
+                    .markdown => try renderMarkdownPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
+                    .zig_prose, .zig_raw => try renderZigPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
+                }
             },
-            .section => |s| for (s.entries) |e| {
+            .section => |s| for (s.items) |sub| {
+                const e = switch (sub) {
+                    .entry => |en| en,
+                    .section => continue,
+                };
                 if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
                 if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
                     continue;
                 Progress.setCurrent(e.slug);
-                try renderGuidePage(allocator, &out_dir, e, project_name, mods, guides, examples, emoji_provider, theme, conf_dir, home_slug, false, cache);
+                switch (e.mode) {
+                    .markdown => try renderMarkdownPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
+                    .zig_prose, .zig_raw => try renderZigPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
+                }
             },
         };
         Progress.endFiles();
     }
 
-    // ── example pages ────────────────────────────────────────────────────────
-    if (examples.len > 0) {
-        try out_dir.makePath("example");
-        for (examples) |e| {
-            if (!conf_changed and e.src_path.len > 0 and cache.sourceUnchanged(e.src_path))
-                continue;
-            Progress.setCurrent(e.slug);
-            try renderExamplePage(allocator, &out_dir, e, project_name, mods, guides, examples, emoji_provider, theme, home_slug);
-            Progress.endFiles();
-        }
-        for (examples) |e| {
-            if (e.src_path.len > 0) cache.recordSource(e.src_path) catch {};
-        }
-    }
-
     // ── Update and save build cache ──────────────────────────────────────────
     if (conf_abs_path) |cp| cache.recordConf(cp) catch {};
     for (mods) |mod| cache.recordSource(mod.abs_path) catch {};
-    for (guides) |item| switch (item) {
+    for (pages) |item| switch (item) {
         .entry => |e| {
             if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {};
         },
-        .section => |s| for (s.entries) |e| {
-            if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {};
+        .section => |s| for (s.items) |sub| {
+            if (sub == .entry and sub.entry.src_path.len > 0)
+                cache.recordGuide(sub.entry.src_path) catch {};
         },
     };
     cache.save(out_path) catch |err| {
@@ -1809,12 +1815,13 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
 
 /// Rewrite internal link schemes produced by the markdown parser into proper relative URLs.
 ///
-/// Supported syntax in guide markdown:
+/// Supported syntax in page markdown:
 ///   `[text](sym:Name)`             → any public symbol (searched across all modules)
 ///   `[text](sym:module.Name)`      → symbol qualified by module name
 ///   `[text](sym:Container.method)` → method anchor (when first part is not a module)
 ///   `[text](mod:name)`             → module API page (`api/name.html`)
-///   `[text](guide:slug)`           → another guide page (`guide/slug.html`)
+///   `[text](page:slug)`            → another page (`page/slug.html`)
+///   `[text](guide:slug)`           → another page, backward-compat alias for `page:slug`
 pub fn resolveInternalLinks(
     allocator: std.mem.Allocator,
     html: []const u8,
@@ -1829,12 +1836,14 @@ pub fn resolveInternalLinks(
         const sym_pos = std.mem.indexOf(u8, rest, "href=\"sym:");
         const mod_pos = std.mem.indexOf(u8, rest, "href=\"mod:");
         const guide_pos = std.mem.indexOf(u8, rest, "href=\"guide:");
+        const page_pos = std.mem.indexOf(u8, rest, "href=\"page:");
 
         // Pick the earliest marker.
         var fp: usize = std.math.maxInt(usize);
         if (sym_pos) |p| fp = @min(fp, p);
         if (mod_pos) |p| fp = @min(fp, p);
         if (guide_pos) |p| fp = @min(fp, p);
+        if (page_pos) |p| fp = @min(fp, p);
         if (fp == std.math.maxInt(usize)) {
             try out.appendSlice(allocator, rest);
             break;
@@ -1846,8 +1855,10 @@ pub fn resolveInternalLinks(
             "href=\"sym:"
         else if (mod_pos != null and fp == mod_pos.?)
             "href=\"mod:"
+        else if (guide_pos != null and fp == guide_pos.?)
+            "href=\"guide:"
         else
-            "href=\"guide:";
+            "href=\"page:";
 
         const after = rest[fp + marker.len ..];
         const close = std.mem.indexOfScalar(u8, after, '"') orelse {
@@ -1879,9 +1890,9 @@ pub fn resolveInternalLinks(
                 .{ prefix, target },
             );
         } else {
-            // guide:
+            // guide: (backward compat) or page:
             try out.writer(allocator).print(
-                "href=\"{s}/guide/{s}.html",
+                "href=\"{s}/page/{s}.html",
                 .{ prefix, target },
             );
         }
@@ -1995,19 +2006,18 @@ fn processImages(
     return out.toOwnedSlice(allocator);
 }
 
-fn renderGuidePage(
+fn renderMarkdownPage(
     allocator: std.mem.Allocator,
     out_dir: *std.fs.Dir,
-    entry: GuideEntry,
+    entry: PageEntry,
     project_name: []const u8,
     mods: []const symbols.Module,
-    guides: []const GuideNavItem,
-    examples: []const ExampleEntry,
+    pages: []const PageNavItem,
     emoji_provider: emoji.Provider,
     theme: Theme,
     conf_dir: ?[]const u8,
     home_slug: ?[]const u8,
-    /// When true, output to `index.html` with prefix `.` instead of `guide/{slug}.html`.
+    /// When true, output to `index.html` with prefix `.` instead of `page/{slug}.html`.
     is_home: bool,
     cache: *cache_mod.Cache,
 ) !void {
@@ -2025,7 +2035,7 @@ fn renderGuidePage(
     else
         "..";
 
-    try writeHeader(&buf, title, project_name, mods, guides, examples, null, entry.slug, null, prefix);
+    try writeHeader(&buf, title, project_name, mods, pages, null, entry.slug, prefix);
 
     const raw = try markdown.toHtml(allocator, entry.content);
     defer allocator.free(raw);
@@ -2049,7 +2059,7 @@ fn renderGuidePage(
     const filename = if (is_home)
         try allocator.dupe(u8, "index.html")
     else
-        try std.fmt.allocPrint(allocator, "guide/{s}.html", .{entry.slug});
+        try std.fmt.allocPrint(allocator, "page/{s}.html", .{entry.slug});
     defer allocator.free(filename);
 
     // Ensure parent directory exists for nested slugs
@@ -2112,17 +2122,18 @@ fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []co
     }
 }
 
-fn renderExamplePage(
+fn renderZigPage(
     allocator: std.mem.Allocator,
     out_dir: *std.fs.Dir,
-    entry: ExampleEntry,
+    entry: PageEntry,
     project_name: []const u8,
     mods: []const symbols.Module,
-    guides: []const GuideNavItem,
-    examples: []const ExampleEntry,
+    pages: []const PageNavItem,
     emoji_provider: emoji.Provider,
     theme: Theme,
     home_slug: ?[]const u8,
+    /// When true, output to `index.html` with prefix `.` instead of `page/{slug}.html`.
+    is_home: bool,
 ) !void {
     var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
@@ -2131,33 +2142,46 @@ fn renderExamplePage(
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
     defer allocator.free(title);
 
-    // example/*.html → prefix is ".."
-    const prefix = "..";
+    const prefix: []const u8 = if (is_home)
+        "."
+    else if (std.mem.indexOfScalar(u8, entry.slug, '/') != null)
+        "../.."
+    else
+        "..";
 
-    try writeHeader(&buf, title, project_name, mods, guides, examples, null, null, entry.slug, prefix);
-    // Example pages have no right-sidebar TOC; reclaim that margin.
+    try writeHeader(&buf, title, project_name, mods, pages, null, entry.slug, prefix);
+    // Zig pages have no right-sidebar TOC; reclaim that margin.
     try buf.writeAll("<style>main{margin-right:0}</style>\n");
+
+    const show_prose = entry.mode == .zig_prose;
 
     try buf.writeAll("<div class=\"guide-content example-page\">\n");
     try buf.writeAll("<div class=\"example-page-header\">\n<h1>");
     try htmlEscape(&buf, entry.title);
-    try buf.writeAll("</h1>\n<button id=\"raw-toggle\">Raw view</button>\n</div>\n");
-
-    // Prose + code segments view.
-    try buf.writeAll("<div class=\"example-page-content\">\n");
-    const segments = try example_mod.parse(allocator, entry.src);
-    defer {
-        example_mod.freeSegments(allocator, segments);
-        allocator.free(segments);
+    try buf.writeAll("</h1>\n");
+    if (show_prose) {
+        try buf.writeAll("<button id=\"raw-toggle\">Raw view</button>\n");
     }
-    try renderExampleSegments(&buf, allocator, segments, mods, prefix);
     try buf.writeAll("</div>\n");
 
-    // Raw view: full source in a single syntax-highlighted block (hidden by default).
-    const raw_hl = markdown.highlight.highlightZig(allocator, entry.src) catch blk: {
+    if (show_prose) {
+        // Prose + code segments view (visible by default).
+        try buf.writeAll("<div class=\"example-page-content\">\n");
+        const segments = try example_mod.parse(allocator, entry.content);
+        defer {
+            example_mod.freeSegments(allocator, segments);
+            allocator.free(segments);
+        }
+        try renderExampleSegments(&buf, allocator, segments, mods, prefix);
+        try buf.writeAll("</div>\n");
+    }
+
+    // Raw view: full source in a single syntax-highlighted block.
+    // Hidden initially when prose mode is active; shown directly in raw mode.
+    const raw_hl = markdown.highlight.highlightZig(allocator, entry.content) catch blk: {
         var esc: std.ArrayList(u8) = .{};
         defer esc.deinit(allocator);
-        for (entry.src) |c| switch (c) {
+        for (entry.content) |c| switch (c) {
             '<' => try esc.appendSlice(allocator, "&lt;"),
             '>' => try esc.appendSlice(allocator, "&gt;"),
             '&' => try esc.appendSlice(allocator, "&amp;"),
@@ -2166,28 +2190,42 @@ fn renderExamplePage(
         break :blk try esc.toOwnedSlice(allocator);
     };
     defer allocator.free(raw_hl);
-    try buf.writeAll("<pre class=\"example-raw-view example-hidden\"><code class=\"language-zig\">");
+    if (show_prose) {
+        try buf.writeAll("<pre class=\"example-raw-view example-hidden\"><code class=\"language-zig\">");
+    } else {
+        try buf.writeAll("<pre class=\"example-raw-view\"><code class=\"language-zig\">");
+    }
     try buf.writeAll(raw_hl);
     try buf.writeAll("</code></pre>\n");
 
     try buf.writeAll("</div>\n");
-    try buf.writeAll(
-        \\<script>(function(){
-        \\var btn=document.getElementById('raw-toggle');
-        \\var raw=document.querySelector('.example-raw-view');
-        \\var content=document.querySelector('.example-page-content');
-        \\btn.addEventListener('click',function(){
-        \\var toRaw=raw.classList.contains('example-hidden');
-        \\raw.classList.toggle('example-hidden',!toRaw);
-        \\content.classList.toggle('example-hidden',toRaw);
-        \\btn.textContent=toRaw?'Prose view':'Raw view';
-        \\});})();</script>
-        \\
-    );
+
+    if (show_prose) {
+        try buf.writeAll(
+            \\<script>(function(){
+            \\var btn=document.getElementById('raw-toggle');
+            \\var raw=document.querySelector('.example-raw-view');
+            \\var content=document.querySelector('.example-page-content');
+            \\btn.addEventListener('click',function(){
+            \\var toRaw=raw.classList.contains('example-hidden');
+            \\raw.classList.toggle('example-hidden',!toRaw);
+            \\content.classList.toggle('example-hidden',toRaw);
+            \\btn.textContent=toRaw?'Prose view':'Raw view';
+            \\});})();</script>
+            \\
+        );
+    }
     try writeFooter(&buf);
 
-    const filename = try std.fmt.allocPrint(allocator, "example/{s}.html", .{entry.slug});
+    const filename = if (is_home)
+        try allocator.dupe(u8, "index.html")
+    else
+        try std.fmt.allocPrint(allocator, "page/{s}.html", .{entry.slug});
     defer allocator.free(filename);
+
+    if (std.fs.path.dirname(filename)) |dir_path| {
+        try out_dir.makePath(dir_path);
+    }
 
     const file = try out_dir.createFile(filename, .{});
     defer file.close();
