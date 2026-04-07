@@ -1585,17 +1585,26 @@ pub fn renderSite(
 
     // ── api/<module>.html ────────────────────────────────────────────────────
     {
+        // Count only the modules that actually need re-rendering.
+        var n_to_render: usize = 0;
+        for (mods) |mod| {
+            if (conf_changed or assets_changed or !cache.sourceUnchanged(mod.abs_path))
+                n_to_render += 1;
+        }
         var label_buf: [64]u8 = undefined;
-        const label = if (!sources_changed)
+        const label = if (n_to_render == 0)
             "api pages up to date"
         else
-            std.fmt.bufPrint(&label_buf, "rendering api ({d} module{s})", .{
-                mods.len, if (mods.len == 1) "" else "s",
+            std.fmt.bufPrint(&label_buf, "rendering api ({d}/{d} module{s})", .{
+                n_to_render, mods.len, if (mods.len == 1) "" else "s",
             }) catch "rendering api";
         progress.begin(label);
     }
-    if (sources_changed) {
+    {
         for (mods) |mod| {
+            // Skip this module if its source and the conf/assets are all unchanged.
+            if (!conf_changed and !assets_changed and cache.sourceUnchanged(mod.abs_path))
+                continue;
             Progress.setCurrent(mod.name);
             var buf = Buf.init(allocator, emoji_provider, theme);
             defer buf.deinit();
