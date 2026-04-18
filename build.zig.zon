@@ -14,12 +14,12 @@
             .hash = "testz-1.2.0-abaPyUhKCgC26UcPU4iP3zpaVMyNEbihGecCaisssARM",
         },
         .tree_sitter = .{
-            .url = "https://github.com/tree-sitter/zig-tree-sitter/archive/refs/heads/master.tar.gz",
-            .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
+            .url = "git+https://github.com/srjilarious/zig-tree-sitter#755b72d810586ffaac9a24b4efdd9773afd5d2ef",
+            .hash = "tree_sitter-0.25.0-8heIfwOaAQDsD5fXhxKpYX8hRmvnWNRQOH8uXjc46vGz",
         },
         .tree_sitter_zig = .{
-            .url = "https://github.com/srjilarious/tree-sitter-zig/archive/refs/heads/master.tar.gz",
-            .hash = "tree_sitter_zig-1.1.3-C0B1jKN8XABOua4LtTGmld2-Xkzv6VOc2KZoBTop3GTR",
+            .url = "git+https://github.com/srjilarious/tree-sitter-zig#a92bb1fc6b6648fc0dfd38aecfe23ed4ae016e6a",
+            .hash = "tree_sitter_zig-1.1.3-C0B1jKN8XABxM57P1YKyaMTUYE9chnuq23jBzBQR0OI7",
         },
     },
 }
