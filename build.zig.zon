@@ -1,24 +1,25 @@
 .{
     .name = .zkdocs,
-    .version = "0.6.0",
+    .version = "0.7.0",
     .fingerprint = 0x858a3df34daf0ee0,
+    .minimum_zig_version = "0.16.0",
     .paths = .{"."},
     .dependencies = .{
         .zargunaught = .{
-            .url = "https://github.com/srjilarious/zargunaught/archive/refs/tags/v1.1.0.tar.gz",
-            .hash = "zargunaught-1.1.0-aoeNI7vdAAAufpOIoCb_JZo0nl2CwJNMi2y0vLhpVNIz",
+            .url = "https://github.com/srjilarious/zargunaught/archive/refs/tags/v1.2.0.tar.gz",
+            .hash = "zargunaught-1.2.0-aoeNI8jeAAD9UZbeu-Wc7Q_Q5LF1A4XsBL8o4bXh_Q6l",
         },
         .testz = .{
-            .url = "https://github.com/srjilarious/testz/archive/refs/tags/v1.1.0.tar.gz",
-            .hash = "testz-1.1.0-abaPyRr0CAD7nMXVE8c40UoSSUoeLQN_NQWoQjEivQ0T",
+            .url = "https://github.com/srjilarious/testz/archive/refs/tags/v1.2.0.tar.gz",
+            .hash = "testz-1.2.0-abaPyUhKCgC26UcPU4iP3zpaVMyNEbihGecCaisssARM",
         },
         .tree_sitter = .{
             .url = "https://github.com/tree-sitter/zig-tree-sitter/archive/refs/heads/master.tar.gz",
             .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
         },
         .tree_sitter_zig = .{
-            .url = "https://github.com/tree-sitter-grammars/tree-sitter-zig/archive/refs/heads/master.tar.gz",
-            .hash = "tree_sitter_zig-1.1.2-AAAAAJ57XACsD_XBHC4i6G6rnCsZ1dZj7CLRTC09toEB",
+            .url = "https://github.com/srjilarious/tree-sitter-zig/archive/refs/heads/master.tar.gz",
+            .hash = "tree_sitter_zig-1.1.3-C0B1jKN8XABOua4LtTGmld2-Xkzv6VOc2KZoBTop3GTR",
         },
     },
 }

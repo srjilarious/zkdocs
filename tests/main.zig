@@ -30,18 +30,18 @@ fn findSymbol(syms: []const symbols.Symbol, kind: symbols.SymbolKind, name: []co
     return null;
 }
 
+var g_Io: std.Io = undefined;
+
 //* ---
 
 //* The following tests module checks that the `symbols` module correctly extracts information from Zig source files, and that the `markdown` and `render` modules correctly handle doc comments and link resolution. The tests use a sample Zig file `sample.zig` which contains various constructs to test against.
 
 const FunctionTests = struct {
     pub fn addFunctionIsExtracted() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .function, "add") orelse {
@@ -55,12 +55,10 @@ const FunctionTests = struct {
     }
 
     pub fn privateHelperIsExtracted() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .function, "privateHelper") orelse {
@@ -76,12 +74,10 @@ const FunctionTests = struct {
 
 const DocTests = struct {
     pub fn singleLineDoc() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .function, "sub") orelse {
@@ -92,12 +88,10 @@ const DocTests = struct {
     }
 
     pub fn multiLineDoc() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .function, "add") orelse {
@@ -109,12 +103,10 @@ const DocTests = struct {
     }
 
     pub fn noDocForPrivate() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .function, "privateHelper") orelse {
@@ -127,12 +119,10 @@ const DocTests = struct {
 //* This module checks that the `symbols` module correctly follows imports and extracts symbols from multiple modules, not just the root. The `sample.zig` file imports a `math.zig` module, so we check that symbols from `math.zig` are also extracted and that their properties (like `pub`) are correct.
 const ContainerTests = struct {
     pub fn structFieldsExtracted() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .container, "Point") orelse {
@@ -147,12 +137,10 @@ const ContainerTests = struct {
     }
 
     pub fn structMethodsExtracted() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .container, "Point") orelse {
@@ -176,12 +164,10 @@ const ContainerTests = struct {
     }
 
     pub fn enumFieldsExtracted() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .container, "Color") orelse {
@@ -199,12 +185,10 @@ const ContainerTests = struct {
 //* This test module checks that the `symbols` module correctly follows imports and extracts symbols from multiple modules, not just the root file.
 const ImportTests = struct {
     pub fn mathModuleFollowed() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         // Should have at least two modules: sample and math
         try testz.expectTrue(mods.len >= 2);
@@ -225,12 +209,10 @@ const ImportTests = struct {
     }
 
     pub fn vec2ContainerInMath() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         for (mods) |mod| {
             if (!std.mem.eql(u8, mod.name, "math")) continue;
@@ -250,9 +232,7 @@ const MarkdownTests = struct {
     /// Code fence containing embedded ``` lines (e.g. doc-comment examples)
     /// must not close the outer block prematurely.
     pub fn embeddedFenceDoesNotCloseBlock() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         const md =
             \\```zig
@@ -264,8 +244,8 @@ const MarkdownTests = struct {
             \\pub fn foo() void {}
             \\```
         ;
-        const html = try markdown.toHtml(allocator, md);
-        defer allocator.free(html);
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
 
         // Whole input must appear in one <pre><code> block.
         try testz.expectTrue(std.mem.indexOf(u8, html, "<pre>") != null);
@@ -280,12 +260,10 @@ const MarkdownTests = struct {
 
     /// Inline code content must be HTML-escaped (no raw < > & in output).
     pub fn inlineCodeIsEscaped() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const html = try markdown.toHtml(allocator, "use `a < b && c > 0` here");
-        defer allocator.free(html);
+        const html = try markdown.toHtml(gpa, "use `a < b && c > 0` here");
+        defer gpa.free(html);
 
         try testz.expectTrue(std.mem.indexOf(u8, html, "<code>") != null);
         try testz.expectTrue(std.mem.indexOf(u8, html, "&lt;") != null);
@@ -298,9 +276,7 @@ const MarkdownTests = struct {
     /// Two sequential code fences must produce two separate code blocks with
     /// any content between them rendered as a normal paragraph.
     pub fn sequentialFencesProduceTwoBlocks() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         // Use plain fences (no language tag) so content isn't split by the
         // syntax highlighter, making substring checks on content reliable.
@@ -315,8 +291,8 @@ const MarkdownTests = struct {
             \\block_two_content
             \\```
         ;
-        const html = try markdown.toHtml(allocator, md);
-        defer allocator.free(html);
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
 
         // Must contain exactly two <pre> blocks.
         const first_pre = std.mem.indexOf(u8, html, "<pre>") orelse
@@ -335,12 +311,10 @@ const MarkdownTests = struct {
     /// Sequential code fences in an extracted doc comment must produce two
     /// separate code blocks, not merge into one or garble the closing fence.
     pub fn sequentialFencesInDocComment() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const mods = try symbols.extractModuleGraph(allocator, "sample.zig");
-        defer symbols.deinitModules(allocator, mods);
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "sample.zig");
+        defer symbols.deinitModules(gpa, mods);
 
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .container, "SequentialFenceExample") orelse
@@ -353,8 +327,8 @@ const MarkdownTests = struct {
         try testz.expectTrue(second_fence != null);
 
         // Render to HTML and verify two <pre> blocks are produced.
-        const html = try markdown.toHtml(allocator, doc);
-        defer allocator.free(html);
+        const html = try markdown.toHtml(gpa, doc);
+        defer gpa.free(html);
 
         const first_pre = std.mem.indexOf(u8, html, "<pre>") orelse return error.NoPre;
         const second_pre = std.mem.indexOf(u8, html[first_pre + 1 ..], "<pre>");
@@ -364,9 +338,7 @@ const MarkdownTests = struct {
     /// Doc-comment lines starting with `///` inside a code block must not be
     /// rendered as italics (the `*` or `_` formatters must not fire inside blocks).
     pub fn docCommentLinesNotItalic() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         const md =
             \\```zig
@@ -374,8 +346,8 @@ const MarkdownTests = struct {
             \\pub fn sort(items: []const i32) ![]i32 { ... }
             \\```
         ;
-        const html = try markdown.toHtml(allocator, md);
-        defer allocator.free(html);
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
 
         try testz.expectTrue(std.mem.indexOf(u8, html, "<i>") == null);
         try testz.expectTrue(std.mem.indexOf(u8, html, "<em>") == null);
@@ -386,28 +358,24 @@ const MarkdownTests = struct {
 const RenderTests = struct {
     /// `[](sym:Foo)` with no link text should inject `<code>Foo</code>`.
     pub fn emptySymLinkInjectsCodeName() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const html = try render.resolveInternalLinks(allocator,
+        const html = try render.resolveInternalLinks(gpa,
             \\<a href="sym:MyStruct"></a>
         , &.{}, ".");
-        defer allocator.free(html);
+        defer gpa.free(html);
 
         try testz.expectTrue(std.mem.indexOf(u8, html, "<code>MyStruct</code>") != null);
     }
 
     /// Qualified `[](sym:module.Foo)` should display only the last component.
     pub fn emptySymLinkQualifiedUsesLastComponent() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const html = try render.resolveInternalLinks(allocator,
+        const html = try render.resolveInternalLinks(gpa,
             \\<a href="sym:mymod.MyStruct"></a>
         , &.{}, ".");
-        defer allocator.free(html);
+        defer gpa.free(html);
 
         // Display text should be the last component only, not the qualified name.
         try testz.expectTrue(std.mem.indexOf(u8, html, "<code>MyStruct</code>") != null);
@@ -416,12 +384,10 @@ const RenderTests = struct {
 
     /// `[](sym:Foo)` with empty brackets in raw markdown must parse as a link.
     pub fn emptyBracketsSymLinkParsesFromMarkdown() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const html = try markdown.toHtml(allocator, "[](sym:PixzigEngineOptions)");
-        defer allocator.free(html);
+        const html = try markdown.toHtml(gpa, "[](sym:PixzigEngineOptions)");
+        defer gpa.free(html);
 
         // Must produce an <a> tag, not render as plain text.
         try testz.expectTrue(std.mem.indexOf(u8, html, "<a ") != null or
@@ -432,14 +398,12 @@ const RenderTests = struct {
 
     /// `[CustomText](sym:Foo)` already has link text — must not be altered.
     pub fn nonEmptySymLinkPreservesText() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
-        const html = try render.resolveInternalLinks(allocator,
+        const html = try render.resolveInternalLinks(gpa,
             \\<a href="sym:MyStruct">CustomText</a>
         , &.{}, ".");
-        defer allocator.free(html);
+        defer gpa.free(html);
 
         try testz.expectTrue(std.mem.indexOf(u8, html, "CustomText") != null);
         try testz.expectTrue(std.mem.indexOf(u8, html, "<code>") == null);
@@ -451,19 +415,17 @@ const ExampleTests = struct {
     /// Adjacent non-empty prose lines are joined with a space, not separated
     /// into individual paragraphs.
     pub fn proseLinesJoinedWithSpace() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         const src =
             \\//* First sentence of the paragraph.
             \\//* Second sentence on the next line.
             \\//* Third sentence still same paragraph.
         ;
-        const segs = try example.parse(allocator, src);
+        const segs = try example.parse(gpa, src);
         defer {
-            example.freeSegments(allocator, segs);
-            allocator.free(segs);
+            example.freeSegments(gpa, segs);
+            gpa.free(segs);
         }
 
         try testz.expectEqual(segs.len, 1);
@@ -481,19 +443,17 @@ const ExampleTests = struct {
 
     /// A blank //* line creates a paragraph break (two newlines in the text).
     pub fn blankLineCreatesParagraphBreak() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         const src =
             \\//* First paragraph text.
             \\//*
             \\//* Second paragraph text.
         ;
-        const segs = try example.parse(allocator, src);
+        const segs = try example.parse(gpa, src);
         defer {
-            example.freeSegments(allocator, segs);
-            allocator.free(segs);
+            example.freeSegments(gpa, segs);
+            gpa.free(segs);
         }
 
         try testz.expectEqual(segs.len, 1);
@@ -504,19 +464,17 @@ const ExampleTests = struct {
     /// A heading line (//* # ...) always starts on its own line, not joined
     /// with the preceding prose.
     pub fn headingStartsOnNewLine() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         const src =
             \\//* Some intro text.
             \\//* # The Heading
             \\//* Text after heading.
         ;
-        const segs = try example.parse(allocator, src);
+        const segs = try example.parse(gpa, src);
         defer {
-            example.freeSegments(allocator, segs);
-            allocator.free(segs);
+            example.freeSegments(gpa, segs);
+            gpa.free(segs);
         }
 
         try testz.expectEqual(segs.len, 1);
@@ -528,9 +486,7 @@ const ExampleTests = struct {
     /// Indented //* lines produce separate segments with the correct indent
     /// count; a change in indent flushes the current segment.
     pub fn indentedProseTracksIndent() !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
+        const gpa = std.heap.page_allocator;
 
         const src =
             \\//* Top-level prose.
@@ -538,10 +494,10 @@ const ExampleTests = struct {
             \\    //* Still indented.
             \\//* Back to top level.
         ;
-        const segs = try example.parse(allocator, src);
+        const segs = try example.parse(gpa, src);
         defer {
-            example.freeSegments(allocator, segs);
-            allocator.free(segs);
+            example.freeSegments(gpa, segs);
+            gpa.free(segs);
         }
 
         // Three prose segments: indent 0, indent 4, indent 0.
@@ -567,7 +523,8 @@ const DiscoveredTests = testz.discoverTests(.{
     testz.Group{ .name = "Example Parsing", .tag = "example", .mod = ExampleTests },
 }, .{});
 
-pub fn main() !void {
-    try testz.testzRunner(DiscoveredTests);
+pub fn main(init: std.process.Init) !void {
+    g_Io = init.io;
+    try testz.testzRunner(DiscoveredTests, init.minimal.args);
 }
 //* ---

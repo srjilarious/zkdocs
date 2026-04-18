@@ -8,11 +8,8 @@ const zargs = @import("zargunaught");
 pub const emoji = @import("./emoji.zig");
 const cache_mod = @import("./cache.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+pub fn main(init: std.process.Init) !void {
+    var allocator = std.heap.page_allocator; //init.gpa;
     var parser = try zargs.ArgParser.init(allocator, .{
         .name = "zkdocs",
         .description = "Generate documentation for Zig projects.",
@@ -28,7 +25,7 @@ pub fn main() !void {
     });
     defer parser.deinit();
 
-    var args = parser.parse() catch |err| {
+    var args = parser.parse(init.minimal.args) catch |err| {
         std.debug.print("Error parsing args: {any}\n", .{err});
         return;
     };
@@ -44,18 +41,18 @@ pub fn main() !void {
         return;
     }
 
-    // ── Load full project config from --conf if provided ────────────────────
+    // -- Load full project config from --conf if provided --------------------
     var site_conf: ?render.SiteConf = null;
     defer if (site_conf) |*sc| sc.deinit(allocator);
 
     if (args.optionVal("conf")) |conf_path| {
-        site_conf = render.loadSiteConf(allocator, conf_path) catch |err| blk: {
+        site_conf = render.loadSiteConf(init.io, allocator, conf_path) catch |err| blk: {
             std.debug.print("Warning: could not parse '{s}': {}\n", .{ conf_path, err });
             break :blk null;
         };
     }
 
-    // ── Resolve settings: CLI flags override config values ───────────────────
+    // -- Resolve settings: CLI flags override config values -------------------
     // root_path is null when neither --root nor conf sources are given; symbol
     // extraction is skipped in that case (guides-only site).
     const root_path: ?[]const u8 = args.optionVal("root") orelse
@@ -90,29 +87,29 @@ pub fn main() !void {
         var progress = render.Progress.init(total_steps);
 
         // Load the incremental build cache (returns empty cache on first run).
-        var build_cache = cache_mod.Cache.load(allocator, out_path);
+        var build_cache = cache_mod.Cache.load(init.io, allocator, out_path);
         defer build_cache.deinit();
 
         // Resolve the conf file path to absolute for stable cache keys.
         const conf_abs_path: ?[]const u8 = if (args.optionVal("conf")) |cp|
-            cache_mod.absPath(allocator, cp) catch null
+            cache_mod.absPath(init.io, allocator, cp) catch null
         else
             null;
         defer if (conf_abs_path) |p| allocator.free(p);
 
         const modules: []symbols.Module = if (root_path) |rp| blk: {
             progress.begin("extracting symbols");
-            break :blk try symbols.extractModuleGraph(allocator, rp);
+            break :blk try symbols.extractModuleGraph(init.io, allocator, rp);
         } else &.{};
         defer if (root_path != null) symbols.deinitModules(allocator, modules);
 
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
         const show_imports = if (site_conf) |sc| sc.show_imports else false;
-        try render.renderSite(allocator, out_path, project_name, modules, pages, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports);
+        try render.renderSite(init.io, allocator, out_path, project_name, modules, pages, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
-            try symbols.extractModuleGraph(allocator, rp)
+            try symbols.extractModuleGraph(init.io, allocator, rp)
         else
             &.{};
         defer if (root_path != null) symbols.deinitModules(allocator, modules);

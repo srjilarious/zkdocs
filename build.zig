@@ -37,11 +37,11 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    json_grammar_lib.addCSourceFile(.{
+    json_grammar_lib.root_module.addCSourceFile(.{
         .file = b.path("src/grammars/json/parser.c"),
         .flags = &.{"-std=c11"},
     });
-    json_grammar_lib.addIncludePath(b.path("src/grammars/json"));
+    json_grammar_lib.root_module.addIncludePath(b.path("src/grammars/json"));
 
     const json_grammar_mod = b.addModule("tree-sitter-json", .{
         .root_source_file = b.path("src/grammars/json.zig"),

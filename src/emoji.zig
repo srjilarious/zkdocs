@@ -204,10 +204,10 @@ pub fn replaceInHtml(
 ) ![]const u8 {
     if (provider == .none) return allocator.dupe(u8, html);
 
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
-    var tag_buf = std.ArrayList(u8){};
+    var tag_buf = std.ArrayList(u8).empty;
     defer tag_buf.deinit(allocator);
 
     var i: usize = 0;

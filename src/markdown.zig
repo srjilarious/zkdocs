@@ -5,7 +5,7 @@ pub const highlight = @import("./highlight.zig");
 /// Render `markdown` to an HTML fragment (no DOCTYPE/html/body wrapper).
 pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror![]const u8 {
     // Extract admonitions first (before tables, since bodies are rendered recursively).
-    var admonitions: std.ArrayList([]const u8) = .{};
+    var admonitions: std.ArrayList([]const u8) = .empty;
     defer {
         for (admonitions.items) |a| allocator.free(a);
         admonitions.deinit(allocator);
@@ -14,7 +14,7 @@ pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror!
     defer allocator.free(stripped_admon);
 
     // Extract GFM tables before zmd sees them; zmd would wrap them in <p> tags.
-    var tables: std.ArrayList([]const u8) = .{};
+    var tables: std.ArrayList([]const u8) = .empty;
     defer {
         for (tables.items) |t| allocator.free(t);
         tables.deinit(allocator);
@@ -41,7 +41,7 @@ pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror!
 /// Strips embedded HTML tags, lowercases alphanumerics, collapses non-alphanum runs
 /// into single hyphens, and trims leading/trailing hyphens.
 pub fn slugify(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
-    var slug: std.ArrayList(u8) = .{};
+    var slug: std.ArrayList(u8) = .empty;
     errdefer slug.deinit(allocator);
 
     var in_tag = false;
@@ -85,12 +85,12 @@ fn extractTables(
     md: []const u8,
     out_tables: *std.ArrayList([]const u8),
 ) ![]const u8 {
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     // Collect lines; keep track of raw slices into `md`.
     var line_iter = std.mem.splitScalar(u8, md, '\n');
-    var lines: std.ArrayList([]const u8) = .{};
+    var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(allocator);
     while (line_iter.next()) |ln| try lines.append(allocator, ln);
 
@@ -115,7 +115,7 @@ fn extractTables(
                 }
 
                 // Render the table block to HTML.
-                var tbl: std.ArrayList(u8) = .{};
+                var tbl: std.ArrayList(u8) = .empty;
                 errdefer tbl.deinit(allocator);
                 try tbl.appendSlice(allocator, "<table class=\"fields-table\">\n<thead>\n<tr>");
                 try appendTableCells(&tbl, allocator, line, true);
@@ -133,7 +133,11 @@ fn extractTables(
 
                 // Emit sentinel (blank lines around it so zmd treats it as its
                 // own paragraph, making it easy to strip the wrapping <p>).
-                try result.writer(allocator).print("\n\n{s}{d}\n\n", .{ table_sentinel_prefix, idx });
+                {
+                const _s = try std.fmt.allocPrint(allocator, "\n\n{s}{d}\n\n", .{ table_sentinel_prefix, idx });
+                defer allocator.free(_s);
+                try result.appendSlice(allocator, _s);
+                }
                 i = end;
                 continue;
             }
@@ -178,9 +182,13 @@ fn appendTableCells(
         // We detect it by peeking: if rest of string is empty/whitespace.
         if (cell.len == 0 and parts.peek() == null) break;
 
-        try out.writer(allocator).print("<{s}>", .{tag});
+        const open_tag = try std.fmt.allocPrint(allocator, "<{s}>", .{tag});
+        defer allocator.free(open_tag);
+        try out.appendSlice(allocator, open_tag);
         try appendInline(out, allocator, cell);
-        try out.writer(allocator).print("</{s}>", .{tag});
+        const close_tag = try std.fmt.allocPrint(allocator, "</{s}>", .{tag});
+        defer allocator.free(close_tag);
+        try out.appendSlice(allocator, close_tag);
     }
 }
 
@@ -227,7 +235,7 @@ fn restoreBlocks(
 ) ![]const u8 {
     if (blocks.len == 0) return allocator.dupe(u8, html);
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var rest = html;
@@ -265,11 +273,11 @@ fn extractAdmonitions(
     md: []const u8,
     out_admonitions: *std.ArrayList([]const u8),
 ) ![]const u8 {
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var line_iter = std.mem.splitScalar(u8, md, '\n');
-    var lines: std.ArrayList([]const u8) = .{};
+    var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(allocator);
     while (line_iter.next()) |ln| try lines.append(allocator, ln);
 
@@ -296,7 +304,7 @@ fn extractAdmonitions(
             }
 
             // Collect body lines (each indented by 4 spaces; blank lines pass through).
-            var body: std.ArrayList(u8) = .{};
+            var body: std.ArrayList(u8) = .empty;
             errdefer body.deinit(allocator);
             i += 1;
             while (i < lines.items.len) {
@@ -322,24 +330,24 @@ fn extractAdmonitions(
             defer allocator.free(body_html);
 
             // Build the admonition HTML.
-            var html: std.ArrayList(u8) = .{};
+            var html: std.ArrayList(u8) = .empty;
             errdefer html.deinit(allocator);
-            const w = html.writer(allocator);
-            if (collapsible) {
-                try w.print(
+            const admon_html = if (collapsible)
+                try std.fmt.allocPrint(allocator,
                     "<details class=\"admonition {s}\"><summary class=\"admonition-title\">{s}</summary><div class=\"admonition-body\">{s}</div></details>",
-                    .{ admon_type, admon_title, body_html },
-                );
-            } else {
-                try w.print(
+                    .{ admon_type, admon_title, body_html })
+            else
+                try std.fmt.allocPrint(allocator,
                     "<div class=\"admonition {s}\"><div class=\"admonition-title\">{s}</div><div class=\"admonition-body\">{s}</div></div>",
-                    .{ admon_type, admon_title, body_html },
-                );
-            }
+                    .{ admon_type, admon_title, body_html });
+            defer allocator.free(admon_html);
+            try html.appendSlice(allocator, admon_html);
 
             const idx = out_admonitions.items.len;
             try out_admonitions.append(allocator, try html.toOwnedSlice(allocator));
-            try result.writer(allocator).print("\n\n{s}{d}\n\n", .{ admonition_sentinel_prefix, idx });
+            const admon_sentinel = try std.fmt.allocPrint(allocator, "\n\n{s}{d}\n\n", .{ admonition_sentinel_prefix, idx });
+            defer allocator.free(admon_sentinel);
+            try result.appendSlice(allocator, admon_sentinel);
             continue;
         }
 
@@ -394,7 +402,7 @@ fn findSentinel(html: []const u8, prefix: []const u8) ?SentinelMatch {
         if (between.len == 0) pre_start = p_idx;
     }
     // Check for </p> after.
-    const after = std.mem.trimLeft(u8, html[post_end..], " \t\r\n");
+    const after = std.mem.trimStart(u8, html[post_end..], " \t\r\n");
     if (std.mem.startsWith(u8, after, "</p>")) {
         post_end = html.len - after.len + 4;
     }
@@ -415,7 +423,7 @@ fn rootFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
 
 // Inline code: plain <code> element.
 fn codeFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
-    var escaped: std.ArrayList(u8) = .{};
+    var escaped: std.ArrayList(u8) = .empty;
     errdefer escaped.deinit(allocator);
     try htmlEscapeInto(&escaped, allocator, node.content);
     const escaped_str = try escaped.toOwnedSlice(allocator);
@@ -435,7 +443,7 @@ fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
             );
         } else |_| {}
         // Unknown language — escape the raw source.
-        var escaped: std.ArrayList(u8) = .{};
+        var escaped: std.ArrayList(u8) = .empty;
         errdefer escaped.deinit(allocator);
         try htmlEscapeInto(&escaped, allocator, node.content);
         const escaped_str = try escaped.toOwnedSlice(allocator);
@@ -446,7 +454,7 @@ fn blockFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
             .{ lang, escaped_str },
         );
     }
-    var escaped: std.ArrayList(u8) = .{};
+    var escaped: std.ArrayList(u8) = .empty;
     errdefer escaped.deinit(allocator);
     try htmlEscapeInto(&escaped, allocator, node.content);
     const escaped_str = try escaped.toOwnedSlice(allocator);

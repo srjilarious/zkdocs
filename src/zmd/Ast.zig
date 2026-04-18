@@ -678,7 +678,7 @@ inline fn strip(input: []const u8) []const u8 {
 
 inline fn stripBlock(input: []const u8) []const u8 {
     const s = if (input.len > 0 and input[0] == '\n') input[1..] else input;
-    return std.mem.trimRight(u8, s, &std.ascii.whitespace);
+    return std.mem.trimEnd(u8, s, &std.ascii.whitespace);
 }
 
 // Output a parsed tree with indentation to stderr.

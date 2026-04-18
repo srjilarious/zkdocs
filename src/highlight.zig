@@ -61,7 +61,7 @@ fn highlightWith(
     defer cursor.destroy();
     cursor.exec(query, tree.rootNode());
 
-    var ranges: std.ArrayList(CaptureRange) = .{};
+    var ranges: std.ArrayList(CaptureRange) = .empty;
     defer ranges.deinit(allocator);
 
     while (cursor.nextCapture()) |tup| {
@@ -86,7 +86,7 @@ fn highlightWith(
         }
     }.lt);
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     const src_len: u32 = @intCast(source.len);
@@ -120,7 +120,7 @@ fn highlightWith(
 }
 
 fn escapedOnly(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try appendEscaped(allocator, &out, source);
     return out.toOwnedSlice(allocator);

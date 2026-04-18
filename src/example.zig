@@ -35,21 +35,21 @@ const State = enum { top, hidden, collapsed };
 /// The returned slice and all strings within are heap-allocated; free with
 /// `freeSegments` then `allocator.free(result)`.
 pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
-    var result: std.ArrayList(Segment) = .{};
+    var result: std.ArrayList(Segment) = .empty;
     errdefer {
         freeSegments(allocator, result.items);
         result.deinit(allocator);
     }
 
     // Sub-segments for a collapsed block in progress.
-    var sub: std.ArrayList(Segment) = .{};
+    var sub: std.ArrayList(Segment) = .empty;
     errdefer {
         freeSegments(allocator, sub.items);
         sub.deinit(allocator);
     }
 
     // Accumulator for the current run of same-kind lines.
-    var acc: std.ArrayList(u8) = .{};
+    var acc: std.ArrayList(u8) = .empty;
     errdefer acc.deinit(allocator);
 
     var state: State = .top;
@@ -86,7 +86,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
     var lines = std.mem.splitScalar(u8, src, '\n');
     while (lines.next()) |line| {
         // Strip leading whitespace to find //* markers regardless of indent.
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = std.mem.trimStart(u8, line, " \t");
         const line_indent = line.len - trimmed.len;
         if (std.mem.startsWith(u8, trimmed, "//*")) {
             const after_marker = trimmed[3..];
@@ -137,7 +137,7 @@ pub fn parse(allocator: std.mem.Allocator, src: []const u8) ![]Segment {
                 current_kind = null;
                 state = .collapsed;
                 // Extract label: everything after "-- collapsed:" trimmed, strip trailing " --"
-                const after_colon = std.mem.trimLeft(u8, rest["-- collapsed:".len..], " ");
+                const after_colon = std.mem.trimStart(u8, rest["-- collapsed:".len..], " ");
                 const label_raw = if (std.mem.endsWith(u8, after_colon, " --"))
                     after_colon[0 .. after_colon.len - 3]
                 else

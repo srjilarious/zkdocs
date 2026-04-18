@@ -184,7 +184,7 @@ const Buf = struct {
     show_imports: bool = false,
 
     fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
-        return .{ .list = .{}, .alloc = alloc, .emoji_provider = provider, .theme = theme };
+        return .{ .list = .empty, .alloc = alloc, .emoji_provider = provider, .theme = theme };
     }
     fn deinit(self: *Buf) void {
         self.list.deinit(self.alloc);
@@ -197,8 +197,8 @@ const Buf = struct {
         defer self.alloc.free(s);
         try self.list.appendSlice(self.alloc, s);
     }
-    fn flush(self: *const Buf, file: std.fs.File) !void {
-        try file.writeAll(self.list.items);
+    fn flush(self: *const Buf, io: std.Io, file: std.Io.File) !void {
+        try file.writeStreamingAll(io, self.list.items);
     }
 };
 
@@ -288,7 +288,7 @@ fn linkCodeSymbols(
     const open_pre = "<pre";
     const close_pre = "</pre>";
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var rest = html;
@@ -343,15 +343,13 @@ fn linkCodeSymbols(
         if (isIdent(content)) {
             if (type_index.get(content)) |ref| {
                 if (std.mem.eql(u8, ref.module_name, current_module)) {
-                    try out.writer(allocator).print(
-                        "<a href=\"#sym-{s}\" class=\"type-link\"><code>{s}</code></a>",
-                        .{ ref.anchor_name, content },
-                    );
+                    const lnk = try std.fmt.allocPrint(allocator, "<a href=\"#sym-{s}\" class=\"type-link\"><code>{s}</code></a>", .{ ref.anchor_name, content });
+                    defer allocator.free(lnk);
+                    try out.appendSlice(allocator, lnk);
                 } else {
-                    try out.writer(allocator).print(
-                        "<a href=\"{s}.html#sym-{s}\" class=\"type-link\"><code>{s}</code></a>",
-                        .{ ref.module_name, ref.anchor_name, content },
-                    );
+                    const lnk = try std.fmt.allocPrint(allocator, "<a href=\"{s}.html#sym-{s}\" class=\"type-link\"><code>{s}</code></a>", .{ ref.module_name, ref.anchor_name, content });
+                    defer allocator.free(lnk);
+                    try out.appendSlice(allocator, lnk);
                 }
                 rest = after_open[close_pos + close_code.len ..];
                 continue;
@@ -368,15 +366,13 @@ fn linkCodeSymbols(
             {
                 if (type_index.get(lhs)) |ref| {
                     if (std.mem.eql(u8, ref.module_name, current_module)) {
-                        try out.writer(allocator).print(
-                            "<a href=\"#sym-{s}-{s}\" class=\"type-link\"><code>{s}</code></a>",
-                            .{ lhs, rhs, content },
-                        );
+                        const lnk = try std.fmt.allocPrint(allocator, "<a href=\"#sym-{s}-{s}\" class=\"type-link\"><code>{s}</code></a>", .{ lhs, rhs, content });
+                        defer allocator.free(lnk);
+                        try out.appendSlice(allocator, lnk);
                     } else {
-                        try out.writer(allocator).print(
-                            "<a href=\"{s}.html#sym-{s}-{s}\" class=\"type-link\"><code>{s}</code></a>",
-                            .{ ref.module_name, lhs, rhs, content },
-                        );
+                        const lnk = try std.fmt.allocPrint(allocator, "<a href=\"{s}.html#sym-{s}-{s}\" class=\"type-link\"><code>{s}</code></a>", .{ ref.module_name, lhs, rhs, content });
+                        defer allocator.free(lnk);
+                        try out.appendSlice(allocator, lnk);
                     }
                     rest = after_open[close_pos + close_code.len ..];
                     continue;
@@ -767,7 +763,7 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
 
     if (f.body_src) |body| {
         const highlighted = markdown.highlight.highlightZig(buf.alloc, body) catch blk: {
-            var esc: std.ArrayList(u8) = .{};
+            var esc: std.ArrayList(u8) = .empty;
             defer esc.deinit(buf.alloc);
             for (body) |c| switch (c) {
                 '<' => try esc.appendSlice(buf.alloc, "&lt;"),
@@ -923,6 +919,7 @@ fn extractTitle(content: []const u8, fallback: []const u8) []const u8 {
 }
 
 fn loadPageEntry(
+    io: std.Io,
     allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
     config_dir: []const u8,
@@ -939,10 +936,14 @@ fn loadPageEntry(
     defer allocator.free(full_path);
 
     // Resolve to absolute path for cache mtime tracking.
-    const src_path = cache_mod.absPath(allocator, full_path) catch try allocator.dupe(u8, full_path);
+    const src_path = cache_mod.absPath(io, allocator, full_path) catch try allocator.dupe(u8, full_path);
     errdefer allocator.free(src_path);
 
-    const content = try std.fs.cwd().readFileAlloc(allocator, full_path, 4 * 1024 * 1024);
+    const content = std.Io.Dir.cwd().readFileAlloc(io, full_path, allocator, .limited(4 * 1024 * 1024)) catch {
+        std.log.err("Unabled to read page source file: {s}", .{full_path});
+        return error.CantReadPageEntry;
+    };
+
     errdefer allocator.free(content);
 
     const is_zig = std.mem.endsWith(u8, src, ".zig");
@@ -986,6 +987,12 @@ fn loadPageEntry(
 // JSON with comments
 // ---------------------------------------------------------------------------
 
+pub fn trimLeft(comptime T: type, slice: []const T, values_to_strip: []const T) []const T {
+    var begin: usize = 0;
+    while (begin < slice.len and std.mem.indexOfScalar(T, values_to_strip, slice[begin]) != null) : (begin += 1) {}
+    return slice[begin..slice.len];
+}
+
 /// Strip `//`-style line comments from `src` and return a freshly allocated
 /// copy suitable for passing to `std.json.parseFromSlice`.
 ///
@@ -993,12 +1000,12 @@ fn loadPageEntry(
 /// The entire line (including its trailing newline) is replaced by a blank
 /// line so that byte offsets in error messages remain meaningful.
 pub fn stripJsonComments(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, src, '\n');
     while (lines.next()) |line| {
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const trimmed = trimLeft(u8, line, " \t");
         if (std.mem.startsWith(u8, trimmed, "//")) {
             // Emit a blank line to preserve line numbers.
             try out.append(allocator, '\n');
@@ -1063,6 +1070,7 @@ pub const SiteConf = struct {
 /// Recursively load a JSON array of page items into `items_out`.
 /// Sections use the `"pages"` key for children (new format).
 fn loadPageItemsFromArray(
+    io: std.Io,
     allocator: std.mem.Allocator,
     array: std.json.Array,
     config_dir: []const u8,
@@ -1076,7 +1084,7 @@ fn loadPageItemsFromArray(
             if (sec_val != .string) continue;
             const sec_title = try allocator.dupe(u8, sec_val.string);
             errdefer allocator.free(sec_title);
-            var sec_items: std.ArrayList(PageNavItem) = .{};
+            var sec_items: std.ArrayList(PageNavItem) = .empty;
             errdefer {
                 for (sec_items.items) |*it| freePageNavItem(allocator, it);
                 sec_items.deinit(allocator);
@@ -1084,7 +1092,7 @@ fn loadPageItemsFromArray(
             // Support both "pages" (new) and "entries" (backward compat) as child key.
             const child_key: []const u8 = if (item_obj.get("pages") != null) "pages" else "entries";
             if (item_obj.get(child_key)) |cv| if (cv == .array) {
-                try loadPageItemsFromArray(allocator, cv.array, config_dir, prose_disabled, &sec_items);
+                try loadPageItemsFromArray(io, allocator, cv.array, config_dir, prose_disabled, &sec_items);
             };
             const sec_slice = try sec_items.toOwnedSlice(allocator);
             errdefer {
@@ -1093,7 +1101,7 @@ fn loadPageItemsFromArray(
             }
             try items_out.append(allocator, .{ .section = .{ .title = sec_title, .items = sec_slice } });
         } else if (item_obj.get("src") != null) {
-            const e = try loadPageEntry(allocator, item_obj, config_dir, null, prose_disabled);
+            const e = try loadPageEntry(io, allocator, item_obj, config_dir, null, prose_disabled);
             errdefer freePageEntry(allocator, @constCast(&e));
             try items_out.append(allocator, .{ .entry = e });
         }
@@ -1102,8 +1110,8 @@ fn loadPageItemsFromArray(
 
 /// Parse a `zkdocs.conf` JSON file and return a `SiteConf`.
 /// The caller owns the result and must call `result.deinit(allocator)`.
-pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteConf {
-    const raw = try std.fs.cwd().readFileAlloc(allocator, conf_path, 2 * 1024 * 1024);
+pub fn loadSiteConf(io: std.Io, allocator: std.mem.Allocator, conf_path: []const u8) !SiteConf {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(io, conf_path, allocator, .limited(2 * 1024 * 1024));
     defer allocator.free(raw);
 
     const conf_dir = std.fs.path.dirname(conf_path) orelse ".";
@@ -1128,7 +1136,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         allocator.free(srcs);
     };
     if (obj.get("sources")) |sv| if (sv == .array) {
-        var list = std.ArrayList([]const u8){};
+        var list = std.ArrayList([]const u8).empty;
         errdefer {
             for (list.items) |s| allocator.free(s);
             list.deinit(allocator);
@@ -1159,7 +1167,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
     // Global prose flag: "prose": false disables prose rendering for all .zig pages.
     const prose_disabled = if (obj.get("prose")) |v| v == .bool and !v.bool else false;
 
-    var page_items = std.ArrayList(PageNavItem){};
+    var page_items = std.ArrayList(PageNavItem).empty;
     errdefer {
         for (page_items.items) |*it| freePageNavItem(allocator, it);
         page_items.deinit(allocator);
@@ -1167,7 +1175,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
 
     if (obj.get("pages")) |pv| if (pv == .array) {
         // New unified "pages" format: extension determines mode, sections use "pages" key.
-        try loadPageItemsFromArray(allocator, pv.array, conf_dir, prose_disabled, &page_items);
+        try loadPageItemsFromArray(io, allocator, pv.array, conf_dir, prose_disabled, &page_items);
     } else {} else {
         // Backward-compat: read old "guides" + "examples" format.
         if (obj.get("guides")) |gv| if (gv == .array) {
@@ -1178,7 +1186,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
                     if (sec_val != .string) continue;
                     const sec_title = try allocator.dupe(u8, sec_val.string);
                     errdefer allocator.free(sec_title);
-                    var sec_entries = std.ArrayList(PageNavItem){};
+                    var sec_entries = std.ArrayList(PageNavItem).empty;
                     errdefer {
                         for (sec_entries.items) |*e| freePageNavItem(allocator, e);
                         sec_entries.deinit(allocator);
@@ -1186,7 +1194,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
                     if (item_obj.get("entries")) |ev| if (ev == .array) {
                         for (ev.array.items) |ei| {
                             if (ei != .object) continue;
-                            const e = try loadPageEntry(allocator, ei.object, conf_dir, .markdown, false);
+                            const e = try loadPageEntry(io, allocator, ei.object, conf_dir, .markdown, false);
                             errdefer freePageEntry(allocator, @constCast(&e));
                             try sec_entries.append(allocator, .{ .entry = e });
                         }
@@ -1198,7 +1206,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
                     }
                     try page_items.append(allocator, .{ .section = .{ .title = sec_title, .items = sec_slice } });
                 } else if (item_obj.get("src") != null) {
-                    const e = try loadPageEntry(allocator, item_obj, conf_dir, .markdown, false);
+                    const e = try loadPageEntry(io, allocator, item_obj, conf_dir, .markdown, false);
                     errdefer freePageEntry(allocator, @constCast(&e));
                     try page_items.append(allocator, .{ .entry = e });
                 }
@@ -1207,7 +1215,7 @@ pub fn loadSiteConf(allocator: std.mem.Allocator, conf_path: []const u8) !SiteCo
         if (obj.get("examples")) |ev| if (ev == .array) {
             for (ev.array.items) |item| {
                 if (item != .object) continue;
-                const e = try loadPageEntry(allocator, item.object, conf_dir, .zig_prose, prose_disabled);
+                const e = try loadPageEntry(io, allocator, item.object, conf_dir, .zig_prose, prose_disabled);
                 errdefer freePageEntry(allocator, @constCast(&e));
                 try page_items.append(allocator, .{ .entry = e });
             }
@@ -1283,7 +1291,9 @@ fn appendSearchDoc(
 ) !void {
     const max_content = 3000;
     const trunc = if (content.len > max_content) content[0..max_content] else content;
-    try buf.writer(allocator).print("{{\"id\":{d},\"title\":", .{id});
+    const prefix = try std.fmt.allocPrint(allocator, "{{\"id\":{d},\"title\":", .{id});
+    defer allocator.free(prefix);
+    try buf.appendSlice(allocator, prefix);
     try jsonEscapeStr(buf, allocator, title);
     try buf.appendSlice(allocator, ",\"content\":");
     try jsonEscapeStr(buf, allocator, trunc);
@@ -1295,13 +1305,14 @@ fn appendSearchDoc(
 }
 
 fn writeSearchIndex(
+    io: std.Io,
     allocator: std.mem.Allocator,
-    out_dir: *std.fs.Dir,
+    out_dir: *std.Io.Dir,
     mods: []const symbols.Module,
     pages: []const PageNavItem,
     home_slug: ?[]const u8,
 ) !void {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
     // Assign to a global so the index works on file:// URLs (fetch() is blocked there).
@@ -1384,9 +1395,9 @@ fn writeSearchIndex(
 
     try buf.appendSlice(allocator, "];");
 
-    const file = try out_dir.createFile("assets/search-data.js", .{});
-    defer file.close();
-    try file.writeAll(buf.items);
+    const file = try out_dir.createFile(io, "assets/search-data.js", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, buf.items);
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,6 +1412,7 @@ fn writeSearchIndex(
 ///     api/<module>.html     (one per module, pub symbols only)
 ///     page/<slug>.html      (one per page entry in zkdocs.conf)
 pub fn renderSite(
+    io: std.Io,
     allocator: std.mem.Allocator,
     out_path: []const u8,
     project_name: []const u8,
@@ -1425,8 +1437,8 @@ pub fn renderSite(
     /// When true, pub @import constants are included in API docs.
     show_imports: bool,
 ) !void {
-    var out_dir = try std.fs.cwd().makeOpenPath(out_path, .{});
-    defer out_dir.close();
+    var out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, out_path, .{});
+    defer out_dir.close(io);
 
     // ── Determine what changed since the last run ────────────────────────────
     const conf_changed = if (conf_abs_path) |cp|
@@ -1443,28 +1455,28 @@ pub fn renderSite(
         if (!cache.sourceUnchanged(mod.abs_path)) sources_changed = true;
     }
 
-    try out_dir.makePath("api");
+    try out_dir.createDirPath(io, "api");
 
     // Write the stylesheet and JS assets.
-    try out_dir.makePath("assets");
+    try out_dir.createDirPath(io, "assets");
     {
-        const css_file = try out_dir.createFile("assets/style.css", .{});
-        defer css_file.close();
-        try css_file.writeAll(CSS);
+        const css_file = try out_dir.createFile(io, "assets/style.css", .{});
+        defer css_file.close(io);
+        try css_file.writeStreamingAll(io, CSS);
     }
     {
-        const f = try out_dir.createFile("assets/minisearch.min.js", .{});
-        defer f.close();
-        try f.writeAll(MINISEARCH_JS);
+        const f = try out_dir.createFile(io, "assets/minisearch.min.js", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, MINISEARCH_JS);
     }
     {
-        const f = try out_dir.createFile("assets/search.js", .{});
-        defer f.close();
-        try f.writeAll(SEARCH_JS);
+        const f = try out_dir.createFile(io, "assets/search.js", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, SEARCH_JS);
     }
-    try writeSearchIndex(allocator, &out_dir, mods, pages, home_slug);
+    try writeSearchIndex(io, allocator, &out_dir, mods, pages, home_slug);
 
-    if (pagesHaveEntries(pages)) try out_dir.makePath("page");
+    if (pagesHaveEntries(pages)) try out_dir.createDirPath(io, "page");
 
     // Build type index once for cross-module type linking.
     var type_index = try buildTypeIndex(allocator, mods);
@@ -1499,8 +1511,8 @@ pub fn renderSite(
         if (home_entry) |he| {
             // Render the designated page as index.html.
             switch (he.mode) {
-                .markdown => try renderMarkdownPage(allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, true, cache),
-                .zig_prose, .zig_raw => try renderZigPage(allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, home_slug, true),
+                .markdown => try renderMarkdownPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, true, cache),
+                .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, home_slug, true),
             }
         } else {
             var buf = Buf.init(allocator, emoji_provider, theme);
@@ -1577,9 +1589,9 @@ pub fn renderSite(
 
             try writeFooter(&buf);
 
-            const file = try out_dir.createFile("index.html", .{});
-            defer file.close();
-            try buf.flush(file);
+            const file = try out_dir.createFile(io, "index.html", .{});
+            defer file.close(io);
+            try buf.flush(io, file);
         } // end else (no home page)
     } // end if (conf_changed or sources_changed)
 
@@ -1679,9 +1691,9 @@ pub fn renderSite(
 
             const filename = try std.fmt.allocPrint(allocator, "api/{s}.html", .{mod.name});
             defer allocator.free(filename);
-            const file = try out_dir.createFile(filename, .{});
-            defer file.close();
-            try buf.flush(file);
+            const file = try out_dir.createFile(io, filename, .{});
+            defer file.close(io);
+            try buf.flush(io, file);
         }
         if (mods.len > 0) Progress.endFiles();
     }
@@ -1709,8 +1721,8 @@ pub fn renderSite(
                     continue;
                 Progress.setCurrent(e.slug);
                 switch (e.mode) {
-                    .markdown => try renderMarkdownPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
-                    .zig_prose, .zig_raw => try renderZigPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
+                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
+                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
                 }
             },
             .section => |s| for (s.items) |sub| {
@@ -1723,8 +1735,8 @@ pub fn renderSite(
                     continue;
                 Progress.setCurrent(e.slug);
                 switch (e.mode) {
-                    .markdown => try renderMarkdownPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
-                    .zig_prose, .zig_raw => try renderZigPage(allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
+                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
+                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
                 }
             },
         };
@@ -1837,7 +1849,7 @@ pub fn resolveInternalLinks(
     mods: []const symbols.Module,
     prefix: []const u8,
 ) ![]const u8 {
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var rest = html;
@@ -1880,30 +1892,28 @@ pub fn resolveInternalLinks(
         if (std.mem.eql(u8, marker, "href=\"sym:")) {
             if (findSymbolRef(mods, target)) |ref| {
                 if (ref.container) |cont| {
-                    try out.writer(allocator).print(
-                        "href=\"{s}/api/{s}.html#sym-{s}-{s}",
-                        .{ prefix, ref.module_name, cont, ref.name },
-                    );
+                    const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html#sym-{s}-{s}", .{ prefix, ref.module_name, cont, ref.name });
+                    defer allocator.free(lnk);
+                    try out.appendSlice(allocator, lnk);
                 } else {
-                    try out.writer(allocator).print(
-                        "href=\"{s}/api/{s}.html#sym-{s}",
-                        .{ prefix, ref.module_name, ref.name },
-                    );
+                    const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html#sym-{s}", .{ prefix, ref.module_name, ref.name });
+                    defer allocator.free(lnk);
+                    try out.appendSlice(allocator, lnk);
                 }
             } else {
-                try out.writer(allocator).print("href=\"#sym-{s}", .{target});
+                const lnk = try std.fmt.allocPrint(allocator, "href=\"#sym-{s}", .{target});
+                defer allocator.free(lnk);
+                try out.appendSlice(allocator, lnk);
             }
         } else if (std.mem.eql(u8, marker, "href=\"mod:")) {
-            try out.writer(allocator).print(
-                "href=\"{s}/api/{s}.html",
-                .{ prefix, target },
-            );
+            const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html", .{ prefix, target });
+            defer allocator.free(lnk);
+            try out.appendSlice(allocator, lnk);
         } else {
             // guide: (backward compat) or page:
-            try out.writer(allocator).print(
-                "href=\"{s}/page/{s}.html",
-                .{ prefix, target },
-            );
+            const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/page/{s}.html", .{ prefix, target });
+            defer allocator.free(lnk);
+            try out.appendSlice(allocator, lnk);
         }
 
         rest = after[close..];
@@ -1919,7 +1929,9 @@ pub fn resolveInternalLinks(
                     else
                         target;
                     try out.appendSlice(allocator, rest[0 .. tag_end + 1]);
-                    try out.writer(allocator).print("<code>{s}</code>", .{display_name});
+                    const code_tag = try std.fmt.allocPrint(allocator, "<code>{s}</code>", .{display_name});
+                    defer allocator.free(code_tag);
+                    try out.appendSlice(allocator, code_tag);
                     try out.appendSlice(allocator, "</a>");
                     rest = after_tag[4..];
                 }
@@ -1944,25 +1956,26 @@ fn isRelativeUrl(url: []const u8) bool {
 /// creating intermediate directories as needed.
 /// Records the source asset path in `cache` so future runs can detect changes.
 fn copyImageFile(
+    io: std.Io,
     allocator: std.mem.Allocator,
     conf_dir: []const u8,
     rel_path: []const u8,
-    out_dir: std.fs.Dir,
+    out_dir: std.Io.Dir,
     cache: *cache_mod.Cache,
 ) !void {
     const dest_rel = try std.fs.path.join(allocator, &.{ "assets", rel_path });
     defer allocator.free(dest_rel);
 
     if (std.fs.path.dirname(dest_rel)) |parent| {
-        try out_dir.makePath(parent);
+        try out_dir.createDirPath(io, parent);
     }
 
     const src_path = try std.fs.path.join(allocator, &.{ conf_dir, rel_path });
     defer allocator.free(src_path);
 
-    try std.fs.cwd().copyFile(src_path, out_dir, dest_rel, .{});
+    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), src_path, out_dir, dest_rel, io, .{});
 
-    const abs_src = cache_mod.absPath(allocator, src_path) catch try allocator.dupe(u8, src_path);
+    const abs_src = cache_mod.absPath(io, allocator, src_path) catch try allocator.dupe(u8, src_path);
     defer allocator.free(abs_src);
     cache.recordAsset(abs_src) catch {};
 }
@@ -1970,15 +1983,16 @@ fn copyImageFile(
 /// Scan rendered HTML for `<img src="...">` elements; copy any relative-path
 /// images into `out_dir/assets/` and rewrite their src to `{prefix}/assets/…`.
 fn processImages(
+    io: std.Io,
     allocator: std.mem.Allocator,
     html: []const u8,
     conf_dir: []const u8,
-    out_dir: std.fs.Dir,
+    out_dir: std.Io.Dir,
     prefix: []const u8,
     cache: *cache_mod.Cache,
 ) ![]const u8 {
     const marker = "src=\"";
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var rest = html;
@@ -1999,10 +2013,12 @@ fn processImages(
 
         const src = after[0..close];
         if (isRelativeUrl(src)) {
-            copyImageFile(allocator, conf_dir, src, out_dir, cache) catch |err| {
+            copyImageFile(io, allocator, conf_dir, src, out_dir, cache) catch |err| {
                 std.debug.print("Warning: could not copy image '{s}': {}\n", .{ src, err });
             };
-            try out.writer(allocator).print("src=\"{s}/assets/{s}", .{ prefix, src });
+            const img_src = try std.fmt.allocPrint(allocator, "src=\"{s}/assets/{s}", .{ prefix, src });
+            defer allocator.free(img_src);
+            try out.appendSlice(allocator, img_src);
         } else {
             try out.appendSlice(allocator, marker);
             try out.appendSlice(allocator, src);
@@ -2016,8 +2032,9 @@ fn processImages(
 }
 
 fn renderMarkdownPage(
+    io: std.Io,
     allocator: std.mem.Allocator,
-    out_dir: *std.fs.Dir,
+    out_dir: *std.Io.Dir,
     entry: PageEntry,
     project_name: []const u8,
     mods: []const symbols.Module,
@@ -2051,7 +2068,7 @@ fn renderMarkdownPage(
     const with_emoji = try emoji.replaceInHtml(allocator, raw, emoji_provider);
     defer allocator.free(with_emoji);
     const with_images = if (conf_dir) |cd|
-        try processImages(allocator, with_emoji, cd, out_dir.*, prefix, cache)
+        try processImages(io, allocator, with_emoji, cd, out_dir.*, prefix, cache)
     else
         try allocator.dupe(u8, with_emoji);
     defer allocator.free(with_images);
@@ -2073,12 +2090,12 @@ fn renderMarkdownPage(
 
     // Ensure parent directory exists for nested slugs
     if (std.fs.path.dirname(filename)) |dir_path| {
-        try out_dir.makePath(dir_path);
+        try out_dir.createDirPath(io, dir_path);
     }
 
-    const file = try out_dir.createFile(filename, .{});
-    defer file.close();
-    try buf.flush(file);
+    const file = try out_dir.createFile(io, filename, .{});
+    defer file.close(io);
+    try buf.flush(io, file);
 }
 
 // ---------------------------------------------------------------------------
@@ -2104,7 +2121,7 @@ fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []co
             .code => {
                 const highlighted = markdown.highlight.highlightZig(allocator, seg.text) catch blk: {
                     // Fallback: HTML-escape raw source.
-                    var esc: std.ArrayList(u8) = .{};
+                    var esc: std.ArrayList(u8) = .empty;
                     defer esc.deinit(allocator);
                     for (seg.text) |c| switch (c) {
                         '<' => try esc.appendSlice(allocator, "&lt;"),
@@ -2132,8 +2149,9 @@ fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []co
 }
 
 fn renderZigPage(
+    io: std.Io,
     allocator: std.mem.Allocator,
-    out_dir: *std.fs.Dir,
+    out_dir: *std.Io.Dir,
     entry: PageEntry,
     project_name: []const u8,
     mods: []const symbols.Module,
@@ -2188,7 +2206,7 @@ fn renderZigPage(
     // Raw view: full source in a single syntax-highlighted block.
     // Hidden initially when prose mode is active; shown directly in raw mode.
     const raw_hl = markdown.highlight.highlightZig(allocator, entry.content) catch blk: {
-        var esc: std.ArrayList(u8) = .{};
+        var esc: std.ArrayList(u8) = .empty;
         defer esc.deinit(allocator);
         for (entry.content) |c| switch (c) {
             '<' => try esc.appendSlice(allocator, "&lt;"),
@@ -2233,10 +2251,10 @@ fn renderZigPage(
     defer allocator.free(filename);
 
     if (std.fs.path.dirname(filename)) |dir_path| {
-        try out_dir.makePath(dir_path);
+        try out_dir.createDirPath(io, dir_path);
     }
 
-    const file = try out_dir.createFile(filename, .{});
-    defer file.close();
-    try buf.flush(file);
+    const file = try out_dir.createFile(io, filename, .{});
+    defer file.close(io);
+    try buf.flush(io, file);
 }

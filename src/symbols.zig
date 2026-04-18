@@ -136,7 +136,7 @@ fn collectDocComment(
 
     // Concatenate lines, stripping the `/// ` or `///` prefix.
     // In Zig 0.15, ArrayList is unmanaged; all methods take the allocator.
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     var idx: std.zig.Ast.TokenIndex = first;
@@ -232,7 +232,7 @@ fn dedentBlock(allocator: std.mem.Allocator, src: []const u8) ![]const u8 {
     }
     if (strip == 0) return allocator.dupe(u8, src);
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var lines = std.mem.splitScalar(u8, src, '\n');
     var line_num: usize = 0;
@@ -417,7 +417,7 @@ fn extractFnSymbol(
         try allocator.dupe(u8, "(anonymous)");
     errdefer allocator.free(name);
 
-    var params_list = std.ArrayList(Param){};
+    var params_list = std.ArrayList(Param).empty;
     errdefer {
         for (params_list.items) |p| {
             if (p.name) |n| allocator.free(n);
@@ -517,7 +517,7 @@ fn extractContainerSymbol(
     const cd = tree.fullContainerDecl(&cd_buf, container_node).?;
     const kind = getContainerKind(tree.*, cd);
 
-    var fields_list = std.ArrayList(Field){};
+    var fields_list = std.ArrayList(Field).empty;
     errdefer {
         for (fields_list.items) |f| {
             allocator.free(f.name);
@@ -527,7 +527,7 @@ fn extractContainerSymbol(
         fields_list.deinit(allocator);
     }
 
-    var decls_list = std.ArrayListUnmanaged(Symbol){};
+    var decls_list: std.ArrayListUnmanaged(Symbol) = .empty;
     errdefer {
         for (decls_list.items) |*s| deinitSymbol(allocator, s);
         decls_list.deinit(allocator);
@@ -670,7 +670,7 @@ fn collectContainerDocComment(
     allocator: std.mem.Allocator,
     tree: std.zig.Ast,
 ) !?[]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     var inCodeBlock = false;
@@ -723,7 +723,7 @@ pub fn extractModule(
         .name = try allocator.dupe(u8, module_name),
         .path = try allocator.dupe(u8, file_path),
         .abs_path = try allocator.dupe(u8, abs_file_path),
-        .symbols = .{},
+        .symbols = .empty,
         .doc = module_doc,
     };
     errdefer {
@@ -867,6 +867,7 @@ fn collectRelativeImports(
 }
 
 fn extractModuleGraphRecurse(
+    io: std.Io,
     allocator: std.mem.Allocator,
     path: []const u8,
     root_dir: []const u8, // absolute path of the root module's directory
@@ -875,7 +876,7 @@ fn extractModuleGraphRecurse(
     parent_name: ?[]const u8,
 ) !void {
     // Resolve to an absolute path so symlinks / ".." don't create duplicates.
-    const abs_path = try std.fs.cwd().realpathAlloc(allocator, path);
+    const abs_path = try std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
     defer allocator.free(abs_path);
 
     const gop = try visited.getOrPut(abs_path);
@@ -884,7 +885,7 @@ fn extractModuleGraphRecurse(
     gop.key_ptr.* = try allocator.dupe(u8, abs_path);
 
     // Read source.
-    const source = try std.fs.cwd().readFileAlloc(allocator, abs_path, std.math.maxInt(usize));
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, abs_path, allocator, .unlimited);
     defer allocator.free(source);
     const source_z = try allocator.dupeZ(u8, source);
     defer allocator.free(source_z);
@@ -912,7 +913,7 @@ fn extractModuleGraphRecurse(
 
     // Find and follow relative imports, recording this module as their parent.
     const dir_path = std.fs.path.dirname(abs_path) orelse ".";
-    var import_paths = std.ArrayList([]const u8){};
+    var import_paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (import_paths.items) |p| allocator.free(p);
         import_paths.deinit(allocator);
@@ -920,7 +921,7 @@ fn extractModuleGraphRecurse(
     try collectRelativeImports(allocator, tree, dir_path, &import_paths);
 
     for (import_paths.items) |import_path| {
-        try extractModuleGraphRecurse(allocator, import_path, root_dir, modules, visited, module_name);
+        try extractModuleGraphRecurse(io, allocator, import_path, root_dir, modules, visited, module_name);
     }
 }
 
@@ -928,10 +929,11 @@ fn extractModuleGraphRecurse(
 /// Follows relative `@import` chains recursively. Returns a caller-owned
 /// slice; free with `deinitModules`.
 pub fn extractModuleGraph(
+    io: std.Io,
     allocator: std.mem.Allocator,
     root_path: []const u8,
 ) ![]Module {
-    var modules = std.ArrayList(Module){};
+    var modules: std.ArrayList(Module) = .empty;
     errdefer {
         for (modules.items) |*m| deinitModule(allocator, m);
         modules.deinit(allocator);
@@ -945,11 +947,11 @@ pub fn extractModuleGraph(
     }
 
     // Resolve root to absolute so we can strip it from all child paths.
-    const abs_root = try std.fs.cwd().realpathAlloc(allocator, root_path);
+    const abs_root = try std.Io.Dir.cwd().realPathFileAlloc(io, root_path, allocator);
     defer allocator.free(abs_root);
     const root_dir = std.fs.path.dirname(abs_root) orelse ".";
 
-    try extractModuleGraphRecurse(allocator, root_path, root_dir, &modules, &visited, null);
+    try extractModuleGraphRecurse(io, allocator, root_path, root_dir, &modules, &visited, null);
     const slice = try modules.toOwnedSlice(allocator);
     // Sort alphabetically by name so each sidebar level is ordered consistently.
     std.mem.sort(Module, slice, {}, struct {
