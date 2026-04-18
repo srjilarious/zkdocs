@@ -1,6 +1,6 @@
 .{
     .name = .zkdocs,
-    .version = "0.7.0",
+    .version = "0.8.0",
     .fingerprint = 0x858a3df34daf0ee0,
     .minimum_zig_version = "0.16.0",
     .paths = .{"."},
@@ -10,8 +10,8 @@
             .hash = "zargunaught-1.2.0-aoeNI8jeAAD9UZbeu-Wc7Q_Q5LF1A4XsBL8o4bXh_Q6l",
         },
         .testz = .{
-            .url = "https://github.com/srjilarious/testz/archive/refs/tags/v1.2.0.tar.gz",
-            .hash = "testz-1.2.0-abaPyUhKCgC26UcPU4iP3zpaVMyNEbihGecCaisssARM",
+            .url = "https://github.com/srjilarious/testz/archive/refs/tags/v1.3.0.tar.gz",
+            .hash = "testz-1.3.0-abaPycV2CgABSIcHgMkmO4bOCZFU2-gwT6sMQMIb3Dwd",
         },
         .tree_sitter = .{
             .url = "git+https://github.com/srjilarious/zig-tree-sitter#755b72d810586ffaac9a24b4efdd9773afd5d2ef",
