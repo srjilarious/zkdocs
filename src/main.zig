@@ -9,18 +9,53 @@ pub const emoji = @import("./emoji.zig");
 const cache_mod = @import("./cache.zig");
 
 pub fn main(init: std.process.Init) !void {
-    var allocator = std.heap.page_allocator; //init.gpa;
+    var allocator = init.gpa;
+    // var allocator = std.heap.page_allocator;
     var parser = try zargs.ArgParser.init(allocator, .{
         .name = "zkdocs",
         .description = "Generate documentation for Zig projects.",
         .opts = &.{
-            .{ .longName = "conf", .shortName = "c", .description = "Path to zkdocs.conf project config file.", .maxNumParams = 1 },
-            .{ .longName = "root", .shortName = "r", .description = "Root source file to extract symbols from (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "name", .shortName = "n", .description = "Display name for the project (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "out", .shortName = "o", .description = "Output directory for generated docs.", .maxNumParams = 1 },
-            .{ .longName = "theme", .shortName = "t", .description = "Color theme: default, monokai, vscode-light, vscode-dark (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "emoji", .shortName = "e", .description = "Emoji provider: none, unicode (default), twemoji, noto, openmoji (overrides conf).", .maxNumParams = 1 },
-            .{ .longName = "help", .shortName = "h", .description = "Print help information." },
+            .{
+                .longName = "conf",
+                .shortName = "c",
+                .description = "Path to zkdocs.conf project config file.",
+                .maxNumParams = 1,
+            },
+            .{
+                .longName = "root",
+                .shortName = "r",
+                .description = "Root source file to extract symbols from (overrides conf).",
+                .maxNumParams = 1,
+            },
+            .{
+                .longName = "name",
+                .shortName = "n",
+                .description = "Display name for the project (overrides conf).",
+                .maxNumParams = 1,
+            },
+            .{
+                .longName = "out",
+                .shortName = "o",
+                .description = "Output directory for generated docs.",
+                .maxNumParams = 1,
+            },
+            .{
+                .longName = "theme",
+                .shortName = "t",
+                .description = "Color theme: default, monokai, vscode-light, vscode-dark (overrides conf).",
+                .maxNumParams = 1,
+            },
+            .{
+                .longName = "emoji",
+                .shortName = "e",
+                .description = "Emoji provider: none, unicode (default), twemoji, noto, openmoji (overrides conf).",
+                .maxNumParams = 1,
+            },
+            .{
+                .longName = "help",
+                .shortName = "h",
+                .description = "Print help information.",
+            },
         },
     });
     defer parser.deinit();
@@ -106,7 +141,8 @@ pub fn main(init: std.process.Init) !void {
         const conf_dir: ?[]const u8 = if (site_conf) |sc| sc.conf_dir else null;
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
         const show_imports = if (site_conf) |sc| sc.show_imports else false;
-        try render.renderSite(init.io, allocator, out_path, project_name, modules, pages, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports);
+        const repo_url: ?[]const u8 = if (site_conf) |sc| sc.repo else null;
+        try render.renderSite(init.io, allocator, out_path, project_name, modules, pages, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports, repo_url);
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(init.io, allocator, rp)

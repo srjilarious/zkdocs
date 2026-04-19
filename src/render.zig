@@ -9,6 +9,9 @@ const CSS = @embedFile("assets/style.css");
 const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
 const SEARCH_JS = @embedFile("assets/search.js");
 
+const ZKDOCS_VERSION = "0.8.0";
+const ZKDOCS_REPO_URL = "https://github.com/srjilarious/zkdocs";
+
 // ---------------------------------------------------------------------------
 // Theme
 // ---------------------------------------------------------------------------
@@ -182,6 +185,10 @@ const Buf = struct {
     home_slug: ?[]const u8 = null,
     /// When false (default), pub consts whose value is an @import are hidden.
     show_imports: bool = false,
+    /// Repository URL from the `"repo"` config key; shown as an icon in the sidebar logo.
+    repo_url: ?[]const u8 = null,
+    /// Project display name; set by writeHeader, consumed by writeFooter.
+    project_name: []const u8 = "",
 
     fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
         return .{ .list = .empty, .alloc = alloc, .emoji_provider = provider, .theme = theme };
@@ -528,9 +535,17 @@ fn writeHeader(
         \\<nav class="sidebar">
         \\
     );
+    buf.project_name = project_name;
+    try buf.writeAll("<div class=\"logo-row\">");
     try buf.print("<a class=\"logo\" href=\"{s}/index.html\">", .{prefix});
     try htmlEscape(buf, project_name);
-    try buf.writeAll("</a>\n");
+    try buf.writeAll("</a>");
+    if (buf.repo_url) |rurl| {
+        try buf.writeAll("<a class=\"repo-link\" href=\"");
+        try htmlEscape(buf, rurl);
+        try buf.writeAll("\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Source repository\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"6\" y1=\"3\" x2=\"6\" y2=\"15\"/><circle cx=\"18\" cy=\"6\" r=\"3\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><path d=\"M18 9a9 9 0 0 1-9 9\"/></svg></a>");
+    }
+    try buf.writeAll("</div>\n");
     // Search bar
     try buf.writeAll(
         \\<div class="search-box">
@@ -556,11 +571,21 @@ fn writeHeader(
         try buf.writeAll("</ul>\n</details>\n");
     }
 
-    try buf.writeAll("</nav>\n<main>\n");
+    try buf.writeAll("</nav>\n<div class=\"page-body\">\n<main>\n");
 }
 
 fn writeFooter(buf: *Buf) !void {
-    try buf.writeAll("\n</main>\n</body>\n</html>\n");
+    try buf.writeAll("\n</main>\n<footer class=\"site-footer\">\n<span class=\"footer-project\">");
+    if (buf.repo_url) |rurl| {
+        try buf.writeAll("<a href=\"");
+        try htmlEscape(buf, rurl);
+        try buf.writeAll("\" target=\"_blank\" rel=\"noopener noreferrer\">");
+        try htmlEscape(buf, buf.project_name);
+        try buf.writeAll("</a>");
+    } else {
+        try htmlEscape(buf, buf.project_name);
+    }
+    try buf.writeAll("</span>\n<span class=\"footer-generated\">Generated with <a href=\"" ++ ZKDOCS_REPO_URL ++ "\" target=\"_blank\" rel=\"noopener noreferrer\">zkdocs</a> " ++ ZKDOCS_VERSION ++ "</span>\n</footer>\n</div>\n</body>\n</html>\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,6 +1078,9 @@ pub const SiteConf = struct {
     /// When true, pub `@import` constants are shown in API docs.
     /// Defaults to false (imports are hidden).
     show_imports: bool = false,
+    /// Repository URL (`"repo"` key), or null if absent.
+    /// When set, a source-control icon linking to this URL is shown next to the project name.
+    repo: ?[]const u8,
 
     pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
         if (self.name) |n| allocator.free(n);
@@ -1064,6 +1092,7 @@ pub const SiteConf = struct {
         freePages(allocator, self.pages);
         allocator.free(self.conf_dir);
         if (self.home_slug) |hs| allocator.free(hs);
+        if (self.repo) |r| allocator.free(r);
     }
 };
 
@@ -1242,6 +1271,13 @@ pub fn loadSiteConf(io: std.Io, allocator: std.mem.Allocator, conf_path: []const
 
     const show_imports = if (obj.get("show_imports")) |v| v == .bool and v.bool else false;
 
+    // --- repo ---
+    const repo: ?[]const u8 = if (obj.get("repo")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (repo) |r| allocator.free(r);
+
     return .{
         .name = name,
         .sources = sources,
@@ -1251,6 +1287,7 @@ pub fn loadSiteConf(io: std.Io, allocator: std.mem.Allocator, conf_path: []const
         .conf_dir = try allocator.dupe(u8, conf_dir),
         .home_slug = home_slug,
         .show_imports = show_imports,
+        .repo = repo,
     };
 }
 
@@ -1436,6 +1473,8 @@ pub fn renderSite(
     conf_abs_path: ?[]const u8,
     /// When true, pub @import constants are included in API docs.
     show_imports: bool,
+    /// Repository URL from the `"repo"` config key, or null if absent.
+    repo_url: ?[]const u8,
 ) !void {
     var out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, out_path, .{});
     defer out_dir.close(io);
@@ -1511,13 +1550,14 @@ pub fn renderSite(
         if (home_entry) |he| {
             // Render the designated page as index.html.
             switch (he.mode) {
-                .markdown => try renderMarkdownPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, true, cache),
-                .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, home_slug, true),
+                .markdown => try renderMarkdownPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, true, cache, repo_url),
+                .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, home_slug, true, repo_url),
             }
         } else {
             var buf = Buf.init(allocator, emoji_provider, theme);
             defer buf.deinit();
             buf.home_slug = home_slug;
+            buf.repo_url = repo_url;
 
             try writeHeader(&buf, project_name, project_name, mods, pages, null, null, ".");
 
@@ -1624,6 +1664,7 @@ pub fn renderSite(
             buf.current_module = mod.name;
             buf.home_slug = home_slug;
             buf.show_imports = show_imports;
+            buf.repo_url = repo_url;
 
             const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
             defer allocator.free(title);
@@ -1721,8 +1762,8 @@ pub fn renderSite(
                     continue;
                 Progress.setCurrent(e.slug);
                 switch (e.mode) {
-                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
-                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
+                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache, repo_url),
+                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false, repo_url),
                 }
             },
             .section => |s| for (s.items) |sub| {
@@ -1735,8 +1776,8 @@ pub fn renderSite(
                     continue;
                 Progress.setCurrent(e.slug);
                 switch (e.mode) {
-                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache),
-                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false),
+                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache, repo_url),
+                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false, repo_url),
                 }
             },
         };
@@ -2046,10 +2087,12 @@ fn renderMarkdownPage(
     /// When true, output to `index.html` with prefix `.` instead of `page/{slug}.html`.
     is_home: bool,
     cache: *cache_mod.Cache,
+    repo_url: ?[]const u8,
 ) !void {
     var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
     buf.home_slug = home_slug;
+    buf.repo_url = repo_url;
 
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
     defer allocator.free(title);
@@ -2161,10 +2204,12 @@ fn renderZigPage(
     home_slug: ?[]const u8,
     /// When true, output to `index.html` with prefix `.` instead of `page/{slug}.html`.
     is_home: bool,
+    repo_url: ?[]const u8,
 ) !void {
     var buf = Buf.init(allocator, emoji_provider, theme);
     defer buf.deinit();
     buf.home_slug = home_slug;
+    buf.repo_url = repo_url;
 
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
     defer allocator.free(title);
@@ -2178,7 +2223,7 @@ fn renderZigPage(
 
     try writeHeader(&buf, title, project_name, mods, pages, null, entry.slug, prefix);
     // Zig pages have no right-sidebar TOC; reclaim that margin.
-    try buf.writeAll("<style>main{margin-right:0}</style>\n");
+    try buf.writeAll("<style>.page-body{margin-right:0}</style>\n");
 
     const show_prose = entry.mode == .zig_prose;
 
