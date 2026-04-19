@@ -56,7 +56,7 @@ pub const Cache = struct {
         map.deinit();
     }
 
-    // ── Load / Save ──────────────────────────────────────────────────────────
+    // -- Load / Save ----------------------------------------------------------
 
     /// Load cache from `<out_dir_path>/.zkdocs-cache`.
     /// Never fails: returns an empty cache on any error (missing file, bad JSON,
@@ -186,7 +186,7 @@ pub const Cache = struct {
         try std.Io.Dir.rename(std.Io.Dir.cwd(), tmp_path, std.Io.Dir.cwd(), cache_path, self.io);
     }
 
-    // ── Query ────────────────────────────────────────────────────────────────
+    // -- Query ----------------------------------------------------------------
 
     /// True if `abs_path` is in the sources map and its current mtime matches.
     pub fn sourceUnchanged(self: *const Cache, abs_path: []const u8) bool {
@@ -226,7 +226,7 @@ pub const Cache = struct {
         return mt == cached;
     }
 
-    // ── Update ───────────────────────────────────────────────────────────────
+    // -- Update ---------------------------------------------------------------
 
     pub fn recordSource(self: *Cache, abs_path: []const u8) !void {
         try self.recordInMap(&self.sources, abs_path);
@@ -257,7 +257,7 @@ pub const Cache = struct {
     }
 };
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// -- Helpers ------------------------------------------------------------------
 
 /// Return the mtime of `path` in whole seconds since Unix epoch.
 /// Uses `Dir.statFile` which avoids opening the file descriptor.
@@ -272,12 +272,17 @@ pub fn fileMtime(io: std.Io, path: []const u8) !i64 {
 /// simple `cwd + path` join if the file cannot be stat'd (should not happen
 /// in normal use, but defensive).
 pub fn absPath(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch {
+    const z = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch {
         // Fallback: join cwd absolute path with the relative path.
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const cwd_len = try std.Io.Dir.cwd().realPath(io, &buf);
         return std.fs.path.resolve(allocator, &.{ buf[0..cwd_len], path });
     };
+    // realPathFileAlloc returns [:0]u8 via dupeZ (allocates len+1 bytes).
+    // Callers store and free as []u8, so re-dupe as a plain slice to avoid
+    // an allocator size mismatch on free.
+    defer allocator.free(z);
+    return allocator.dupe(u8, z);
 }
 
 fn jsonWriteStr(w: anytype, s: []const u8) !void {
