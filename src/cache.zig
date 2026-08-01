@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 
 /// Increment when the cache schema or rendered HTML output format changes.
 /// Existing caches with a different version are silently discarded.
@@ -78,9 +79,13 @@ pub const Cache = struct {
         if (parsed.value != .object) return error.Invalid;
         const obj = parsed.value.object;
 
-        // Version check — mismatched version means stale or incompatible cache.
+        // Version check — mismatched cache schema or zkdocs binary version
+        // means stale or incompatible cache.
         const vj = obj.get("v") orelse return error.Invalid;
         if (vj != .integer or vj.integer != CACHE_VERSION) return error.VersionMismatch;
+
+        const app_ver = obj.get("app_ver") orelse return error.VersionMismatch;
+        if (app_ver != .string or !std.mem.eql(u8, app_ver.string, build_options.version)) return error.VersionMismatch;
 
         var cache = Cache.init(io, allocator);
         errdefer cache.deinit();
@@ -137,6 +142,9 @@ pub const Cache = struct {
         const w = &aw.writer;
 
         try w.print("{{\"v\":{d}", .{CACHE_VERSION});
+
+        try w.writeAll(",\"app_ver\":");
+        try jsonWriteStr(w, build_options.version);
 
         try w.writeAll(",\"conf_path\":");
         if (self.conf_path) |p| try jsonWriteStr(w, p) else try w.writeAll("null");

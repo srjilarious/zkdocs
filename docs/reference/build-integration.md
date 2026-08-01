@@ -35,7 +35,6 @@ pub fn build(b: *std.Build) void {
         .root  = "src/root.zig",      // entry point for symbol extraction
         .name  = "MyLib",             // project name shown in site title
         .out   = "docs",              // output directory
-        .docs  = "docs-src/guides.json", // optional guide config
         .emoji = "unicode",           // optional emoji provider
     });
     b.step("docs", "Generate API documentation").dependOn(docs);
@@ -55,7 +54,6 @@ zig build docs
 | `root` | `[]const u8` | *(required)* | Root Zig source file |
 | `name` | `[]const u8` | *(required)* | Project name |
 | `out` | `[]const u8` | `"docs"` | Output directory |
-| `docs` | `?[]const u8` | `null` | Path to `guides.json` config (or legacy directory) |
 | `emoji` | `?[]const u8` | `null` | Emoji provider name |
 
 ## Import Following

@@ -225,6 +225,19 @@ const ImportTests = struct {
         }
         return error.MathModuleNotFound;
     }
+
+    pub fn missingImportReturnsErrorNotCrash() !void {
+        const gpa = std.heap.page_allocator;
+
+        // Regression test for a double-free: extracting a module whose
+        // import can't be read must surface an error, not abort the
+        // process (verified with DebugAllocator prior to the fix).
+        const result = symbols.extractModuleGraph(g_Io, gpa, "bad_import.zig");
+        if (result) |mods| {
+            symbols.deinitModules(gpa, mods);
+            return error.ExpectedMissingImportError;
+        } else |_| {}
+    }
 };
 
 //* These tests check that the `markdown` module correctly handles various edge cases in Markdown rendering, such as embedded code fences, inline code escaping, and sequential fences. The tests verify that the output HTML is structured correctly and that special characters are escaped as needed. One test also checks that doc-comment lines starting with `///` inside code blocks are not mistakenly rendered as italics.

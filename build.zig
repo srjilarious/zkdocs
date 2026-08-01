@@ -5,9 +5,14 @@ const build_helper = @import("src/build_helper.zig");
 pub const DocsOptions = build_helper.DocsOptions;
 pub const addDocsStep = build_helper.addDocsStep;
 
+const zkdocs_zon = @import("build.zig.zon");
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", zkdocs_zon.version);
 
     const zargunaught_dep = b.dependency("zargunaught", .{});
     const testz_dep = b.dependency("testz", .{});
@@ -72,6 +77,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("tree-sitter-json", json_grammar_mod);
     exe.root_module.addImport("zmd", zmd_mod);
     exe.root_module.addImport("zargunaught", zargunaught_dep.module("zargunaught"));
+    exe.root_module.addImport("build_options", build_options.createModule());
 
     b.installArtifact(exe);
 

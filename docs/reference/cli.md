@@ -14,9 +14,9 @@ zkdocs [options]
 | `--root <path>` | `-r` | Root Zig source file to extract symbols from (overrides conf). |
 | `--name <name>` | `-n` | Display name shown in the site title and navigation (overrides conf). |
 | `--out <dir>` | `-o` | Output directory for the generated HTML site. |
-| `--docs <path>` | `-d` | Path to a legacy `guides.json` file or a flat directory of `.md` files. |
 | `--theme <name>` | `-t` | Color theme: `default`, `monokai`, `vscode-light`, `vscode-dark` (overrides conf). |
 | `--emoji <provider>` | `-e` | Emoji provider: `none`, `unicode` (default), `twemoji`, `noto`, `openmoji` (overrides conf). |
+| `--version` | `-v` | Print the zkdocs version and exit. |
 | `--help` | `-h` | Print help information. |
 
 When `--conf` is given, all settings in the config file are used as defaults.

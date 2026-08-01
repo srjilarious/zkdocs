@@ -32,7 +32,7 @@ to `docs/`.
 - `--root` / `-r` — Root `.zig` file (default: `sample.zig`)
 - `--name` / `-n` — Project display name (default: `Documentation`)
 - `--out`  / `-o` — Output directory (required for HTML generation)
-- `--docs` / `-d` — Directory of `.md` guide pages to include
+- `--conf` / `-c` — Path to a `zkdocs.conf` project config file
 
 ## Doc comments
 

@@ -7,6 +7,7 @@ pub const example = @import("./example.zig");
 const zargs = @import("zargunaught");
 pub const emoji = @import("./emoji.zig");
 const cache_mod = @import("./cache.zig");
+const build_options = @import("build_options");
 
 pub fn main(init: std.process.Init) !void {
     var allocator = init.gpa;
@@ -52,6 +53,11 @@ pub fn main(init: std.process.Init) !void {
                 .maxNumParams = 1,
             },
             .{
+                .longName = "version",
+                .shortName = "v",
+                .description = "Print the zkdocs version and exit.",
+            },
+            .{
                 .longName = "help",
                 .shortName = "h",
                 .description = "Print help information.",
@@ -62,9 +68,14 @@ pub fn main(init: std.process.Init) !void {
 
     var args = parser.parse(init.minimal.args) catch |err| {
         std.debug.print("Error parsing args: {any}\n", .{err});
-        return;
+        std.process.exit(1);
     };
     defer args.deinit();
+
+    if (args.hasOption("version")) {
+        std.debug.print("zkdocs {s}\n", .{build_options.version});
+        return;
+    }
 
     if (args.hasOption("help")) {
         var stdout = try zargs.print.Printer.stdout(allocator);
@@ -81,9 +92,9 @@ pub fn main(init: std.process.Init) !void {
     defer if (site_conf) |*sc| sc.deinit(allocator);
 
     if (args.optionVal("conf")) |conf_path| {
-        site_conf = render.loadSiteConf(init.io, allocator, conf_path) catch |err| blk: {
-            std.debug.print("Warning: could not parse '{s}': {}\n", .{ conf_path, err });
-            break :blk null;
+        site_conf = render.loadSiteConf(init.io, allocator, conf_path) catch |err| {
+            std.debug.print("Error: could not parse '{s}': {}\n", .{ conf_path, err });
+            std.process.exit(1);
         };
     }
 

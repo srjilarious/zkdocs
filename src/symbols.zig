@@ -866,6 +866,14 @@ fn collectRelativeImports(
     }
 }
 
+fn logImportError(path: []const u8, parent_name: ?[]const u8, err: anyerror) void {
+    if (parent_name) |pn| {
+        std.log.err("could not read import '{s}' (imported from {s}): {s}", .{ path, pn, @errorName(err) });
+    } else {
+        std.log.err("could not read import '{s}': {s}", .{ path, @errorName(err) });
+    }
+}
+
 fn extractModuleGraphRecurse(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -876,7 +884,10 @@ fn extractModuleGraphRecurse(
     parent_name: ?[]const u8,
 ) !void {
     // Resolve to an absolute path so symlinks / ".." don't create duplicates.
-    const abs_path = try std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
+    const abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| {
+        logImportError(path, parent_name, err);
+        return err;
+    };
     defer allocator.free(abs_path);
 
     const gop = try visited.getOrPut(abs_path);
@@ -885,7 +896,10 @@ fn extractModuleGraphRecurse(
     gop.key_ptr.* = try allocator.dupe(u8, abs_path);
 
     // Read source.
-    const source = try std.Io.Dir.cwd().readFileAlloc(io, abs_path, allocator, .unlimited);
+    const source = std.Io.Dir.cwd().readFileAlloc(io, abs_path, allocator, .unlimited) catch |err| {
+        logImportError(path, parent_name, err);
+        return err;
+    };
     defer allocator.free(source);
     const source_z = try allocator.dupeZ(u8, source);
     defer allocator.free(source_z);
@@ -907,9 +921,11 @@ fn extractModuleGraphRecurse(
         abs_path; // fallback: show absolute path if outside root tree
 
     var module = try extractModule(allocator, &tree, module_name, rel_path, abs_path);
-    errdefer deinitModule(allocator, &module);
+    var module_owned = false;
+    errdefer if (!module_owned) deinitModule(allocator, &module);
     module.parent_name = if (parent_name) |pn| try allocator.dupe(u8, pn) else null;
     try modules.append(allocator, module);
+    module_owned = true;
 
     // Find and follow relative imports, recording this module as their parent.
     const dir_path = std.fs.path.dirname(abs_path) orelse ".";

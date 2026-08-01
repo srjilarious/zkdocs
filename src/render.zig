@@ -9,7 +9,8 @@ const CSS = @embedFile("assets/style.css");
 const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
 const SEARCH_JS = @embedFile("assets/search.js");
 
-const ZKDOCS_VERSION = "0.8.0";
+const build_options = @import("build_options");
+const ZKDOCS_VERSION = build_options.version;
 const ZKDOCS_REPO_URL = "https://github.com/srjilarious/zkdocs";
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,24 @@ pub fn pagesHaveEntries(pages: []const PageNavItem) bool {
         .section => |s| if (pagesHaveEntries(s.items)) return true,
     };
     return false;
+}
+
+/// Recurse through `items`, invoking `visit` for every leaf `.entry`
+/// regardless of how many `.section` levels it is nested under.
+/// Use this instead of hand-rolling a walk over `[]PageNavItem` — a
+/// one-level-only walk silently drops entries nested two or more
+/// sections deep.
+fn visitPageEntries(
+    items: []const PageNavItem,
+    ctx: anytype,
+    comptime visit: fn (@TypeOf(ctx), PageEntry) anyerror!void,
+) anyerror!void {
+    for (items) |item| {
+        switch (item) {
+            .entry => |e| try visit(ctx, e),
+            .section => |s| try visitPageEntries(s.items, ctx, visit),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,6 +1360,32 @@ fn appendSearchDoc(
     try buf.append(allocator, '}');
 }
 
+/// Recursively render the "Pages" list on the index page, preserving
+/// nested `<ul>`s for each level of section nesting.
+fn writeIndexPageList(buf: *Buf, items: []const PageNavItem, home_slug: ?[]const u8) !void {
+    for (items) |item| {
+        switch (item) {
+            .entry => |e| {
+                const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                if (is_home) {
+                    try buf.writeAll("<li><a href=\"./index.html\">");
+                } else {
+                    try buf.print("<li><a href=\"./page/{s}.html\">", .{e.slug});
+                }
+                try htmlEscape(buf, e.title);
+                try buf.writeAll("</a></li>\n");
+            },
+            .section => |s| {
+                try buf.writeAll("<li><strong>");
+                try htmlEscape(buf, s.title);
+                try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
+                try writeIndexPageList(buf, s.items, home_slug);
+                try buf.writeAll("</ul></li>\n");
+            },
+        }
+    }
+}
+
 fn writeSearchIndex(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -1357,42 +1402,34 @@ fn writeSearchIndex(
     var id: usize = 0;
 
     // Page entries (guides and examples unified)
-    for (pages) |item| {
-        switch (item) {
-            .entry => |e| {
-                const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
-                const url = if (is_home)
-                    try allocator.dupe(u8, "index.html")
-                else
-                    try std.fmt.allocPrint(allocator, "page/{s}.html", .{e.slug});
-                defer allocator.free(url);
-                const doc_type: []const u8 = switch (e.mode) {
-                    .markdown => "guide",
-                    .zig_prose, .zig_raw => "example",
-                };
-                if (id > 0) try buf.append(allocator, ',');
-                try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, doc_type);
-                id += 1;
-            },
-            .section => |s| {
-                for (s.items) |sub_item| {
-                    const e = switch (sub_item) {
-                        .entry => |en| en,
-                        .section => continue,
-                    };
-                    const url = try std.fmt.allocPrint(allocator, "page/{s}.html", .{e.slug});
-                    defer allocator.free(url);
-                    const doc_type: []const u8 = switch (e.mode) {
-                        .markdown => "guide",
-                        .zig_prose, .zig_raw => "example",
-                    };
-                    if (id > 0) try buf.append(allocator, ',');
-                    try appendSearchDoc(&buf, allocator, id, e.title, e.content, url, doc_type);
-                    id += 1;
-                }
-            },
+    const SearchVisitCtx = struct {
+        buf: *std.ArrayList(u8),
+        allocator: std.mem.Allocator,
+        home_slug: ?[]const u8,
+        id: *usize,
+    };
+    try visitPageEntries(pages, SearchVisitCtx{
+        .buf = &buf,
+        .allocator = allocator,
+        .home_slug = home_slug,
+        .id = &id,
+    }, struct {
+        fn visit(ctx: SearchVisitCtx, e: PageEntry) !void {
+            const is_home = if (ctx.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+            const url = if (is_home)
+                try ctx.allocator.dupe(u8, "index.html")
+            else
+                try std.fmt.allocPrint(ctx.allocator, "page/{s}.html", .{e.slug});
+            defer ctx.allocator.free(url);
+            const doc_type: []const u8 = switch (e.mode) {
+                .markdown => "guide",
+                .zig_prose, .zig_raw => "example",
+            };
+            if (ctx.id.* > 0) try ctx.buf.append(ctx.allocator, ',');
+            try appendSearchDoc(ctx.buf, ctx.allocator, ctx.id.*, e.title, e.content, url, doc_type);
+            ctx.id.* += 1;
         }
-    }
+    }.visit);
 
     // API symbols
     for (mods) |mod| {
@@ -1526,13 +1563,14 @@ pub fn renderSite(
     // Find the home page entry if one is designated.
     const home_entry: ?PageEntry = blk: {
         const hs = home_slug orelse break :blk null;
-        for (pages) |item| switch (item) {
-            .entry => |e| if (std.mem.eql(u8, e.slug, hs)) break :blk e,
-            .section => |s| for (s.items) |sub| {
-                if (sub == .entry and std.mem.eql(u8, sub.entry.slug, hs)) break :blk sub.entry;
-            },
-        };
-        break :blk null;
+        const HomeFinder = struct { slug: []const u8, found: ?PageEntry = null };
+        var finder = HomeFinder{ .slug = hs };
+        visitPageEntries(pages, &finder, struct {
+            fn visit(f: *HomeFinder, e: PageEntry) !void {
+                if (f.found == null and std.mem.eql(u8, e.slug, f.slug)) f.found = e;
+            }
+        }.visit) catch {};
+        break :blk finder.found;
     };
 
     const home_changed = if (home_entry) |he|
@@ -1598,32 +1636,7 @@ pub fn renderSite(
 
             if (pagesHaveEntries(pages)) {
                 try buf.writeAll("<h2>Pages</h2>\n<ul class=\"module-list\">\n");
-                for (pages) |item| switch (item) {
-                    .entry => |e| {
-                        const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
-                        if (is_home) {
-                            try buf.print("<li><a href=\"./index.html\">", .{});
-                        } else {
-                            try buf.print("<li><a href=\"./page/{s}.html\">", .{e.slug});
-                        }
-                        try htmlEscape(&buf, e.title);
-                        try buf.writeAll("</a></li>\n");
-                    },
-                    .section => |s| {
-                        try buf.writeAll("<li><strong>");
-                        try htmlEscape(&buf, s.title);
-                        try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
-                        for (s.items) |sub| switch (sub) {
-                            .entry => |e| {
-                                try buf.print("<li><a href=\"./page/{s}.html\">", .{e.slug});
-                                try htmlEscape(&buf, e.title);
-                                try buf.writeAll("</a></li>\n");
-                            },
-                            .section => {},
-                        };
-                        try buf.writeAll("</ul></li>\n");
-                    },
-                };
+                try writeIndexPageList(&buf, pages, home_slug);
                 try buf.writeAll("</ul>\n");
             }
 
@@ -1741,61 +1754,76 @@ pub fn renderSite(
 
     // ── page/ pages ──────────────────────────────────────────────────────────
     if (pagesHaveEntries(pages)) {
-        var n_pages: usize = 0;
-        for (pages) |item| switch (item) {
-            .entry => n_pages += 1,
-            .section => |s| for (s.items) |sub| {
-                if (sub == .entry) n_pages += 1;
-            },
-        };
+        const Counter = struct { n: usize = 0 };
+        var counter = Counter{};
+        try visitPageEntries(pages, &counter, struct {
+            fn visit(c: *Counter, e: PageEntry) !void {
+                _ = e;
+                c.n += 1;
+            }
+        }.visit);
+
         var label_buf: [64]u8 = undefined;
         const label = std.fmt.bufPrint(&label_buf, "rendering pages ({d} page{s})", .{
-            n_pages, if (n_pages == 1) "" else "s",
+            counter.n, if (counter.n == 1) "" else "s",
         }) catch "rendering pages";
         progress.begin(label);
 
-        for (pages) |item| switch (item) {
-            .entry => |e| {
-                if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
-                // Skip if the page source, conf, and assets are all unchanged.
-                if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
-                    continue;
-                Progress.setCurrent(e.slug);
-                switch (e.mode) {
-                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache, repo_url),
-                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false, repo_url),
-                }
-            },
-            .section => |s| for (s.items) |sub| {
-                const e = switch (sub) {
-                    .entry => |en| en,
-                    .section => continue,
-                };
-                if (home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) continue;
-                if (!conf_changed and !assets_changed and e.src_path.len > 0 and cache.guideUnchanged(e.src_path))
-                    continue;
-                Progress.setCurrent(e.slug);
-                switch (e.mode) {
-                    .markdown => try renderMarkdownPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, false, cache, repo_url),
-                    .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, e, project_name, mods, pages, emoji_provider, theme, home_slug, false, repo_url),
-                }
-            },
+        const RenderPageCtx = struct {
+            io: std.Io,
+            allocator: std.mem.Allocator,
+            out_dir: *std.Io.Dir,
+            project_name: []const u8,
+            mods: []const symbols.Module,
+            pages: []const PageNavItem,
+            emoji_provider: emoji.Provider,
+            theme: Theme,
+            conf_dir: ?[]const u8,
+            home_slug: ?[]const u8,
+            cache: *cache_mod.Cache,
+            repo_url: ?[]const u8,
+            conf_changed: bool,
+            assets_changed: bool,
         };
+        try visitPageEntries(pages, RenderPageCtx{
+            .io = io,
+            .allocator = allocator,
+            .out_dir = &out_dir,
+            .project_name = project_name,
+            .mods = mods,
+            .pages = pages,
+            .emoji_provider = emoji_provider,
+            .theme = theme,
+            .conf_dir = conf_dir,
+            .home_slug = home_slug,
+            .cache = cache,
+            .repo_url = repo_url,
+            .conf_changed = conf_changed,
+            .assets_changed = assets_changed,
+        }, struct {
+            fn visit(ctx: RenderPageCtx, e: PageEntry) !void {
+                if (ctx.home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) return;
+                // Skip if the page source, conf, and assets are all unchanged.
+                if (!ctx.conf_changed and !ctx.assets_changed and e.src_path.len > 0 and ctx.cache.guideUnchanged(e.src_path))
+                    return;
+                Progress.setCurrent(e.slug);
+                switch (e.mode) {
+                    .markdown => try renderMarkdownPage(ctx.io, ctx.allocator, ctx.out_dir, e, ctx.project_name, ctx.mods, ctx.pages, ctx.emoji_provider, ctx.theme, ctx.conf_dir, ctx.home_slug, false, ctx.cache, ctx.repo_url),
+                    .zig_prose, .zig_raw => try renderZigPage(ctx.io, ctx.allocator, ctx.out_dir, e, ctx.project_name, ctx.mods, ctx.pages, ctx.emoji_provider, ctx.theme, ctx.home_slug, false, ctx.repo_url),
+                }
+            }
+        }.visit);
         Progress.endFiles();
     }
 
     // ── Update and save build cache ──────────────────────────────────────────
     if (conf_abs_path) |cp| cache.recordConf(cp) catch {};
     for (mods) |mod| cache.recordSource(mod.abs_path) catch {};
-    for (pages) |item| switch (item) {
-        .entry => |e| {
-            if (e.src_path.len > 0) cache.recordGuide(e.src_path) catch {};
-        },
-        .section => |s| for (s.items) |sub| {
-            if (sub == .entry and sub.entry.src_path.len > 0)
-                cache.recordGuide(sub.entry.src_path) catch {};
-        },
-    };
+    try visitPageEntries(pages, cache, struct {
+        fn visit(c: *cache_mod.Cache, e: PageEntry) !void {
+            if (e.src_path.len > 0) c.recordGuide(e.src_path) catch {};
+        }
+    }.visit);
     cache.save(out_path) catch |err| {
         std.debug.print("  warning: could not write build cache: {}\n", .{err});
     };

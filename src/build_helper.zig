@@ -13,9 +13,6 @@ pub const DocsOptions = struct {
     /// is used for sources, name, theme, emoji, and guides. CLI-equivalent fields
     /// in this struct (root, name, emoji, theme) override individual conf values.
     conf: ?[]const u8 = null,
-    /// Optional path to a guides config file (`.json` array format or `.conf`) or
-    /// a directory of flat `.md` files (legacy). Overrides guides from `conf`.
-    docs: ?[]const u8 = null,
     /// Color theme: "default" (dark), "monokai", or "vscode-light".
     /// Overrides the theme in `conf`.
     theme: ?[]const u8 = null,
@@ -50,7 +47,6 @@ pub fn addDocsStep(b: *std.Build, options: DocsOptions) *std.Build.Step {
     if (options.name) |n| run.addArgs(&.{ "--name", n });
     run.addArgs(&.{ "--out", options.out });
     if (options.conf)  |c| run.addArgs(&.{ "--conf",  c });
-    if (options.docs)  |d| run.addArgs(&.{ "--docs",  d });
     if (options.theme) |t| run.addArgs(&.{ "--theme", t });
     if (options.emoji) |e| run.addArgs(&.{ "--emoji", e });
 
