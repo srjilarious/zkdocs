@@ -153,7 +153,21 @@ pub fn main(init: std.process.Init) !void {
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
         const show_imports = if (site_conf) |sc| sc.show_imports else false;
         const repo_url: ?[]const u8 = if (site_conf) |sc| sc.repo else null;
-        try render.renderSite(init.io, allocator, out_path, project_name, modules, pages, emoji_provider, theme, &progress, conf_dir, home_slug, &build_cache, conf_abs_path, show_imports, repo_url);
+        try render.renderSite(init.io, allocator, .{
+            .out_path = out_path,
+            .project_name = project_name,
+            .mods = modules,
+            .pages = pages,
+            .emoji_provider = emoji_provider,
+            .theme = theme,
+            .progress = &progress,
+            .conf_dir = conf_dir,
+            .home_slug = home_slug,
+            .cache = &build_cache,
+            .conf_abs_path = conf_abs_path,
+            .show_imports = show_imports,
+            .repo_url = repo_url,
+        });
     } else {
         const modules: []symbols.Module = if (root_path) |rp|
             try symbols.extractModuleGraph(init.io, allocator, rp)

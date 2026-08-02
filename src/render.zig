@@ -189,28 +189,48 @@ pub fn buildTypeIndex(allocator: std.mem.Allocator, mods: []const symbols.Module
 }
 
 // ---------------------------------------------------------------------------
+// Site-wide render context
+// ---------------------------------------------------------------------------
+
+/// Everything a page renderer needs to know about the site as a whole:
+/// conf-derived settings, the extracted modules and configured pages, the
+/// cross-module type index, and the shared cache/progress reporter. Built
+/// once per `renderSite` call and passed around by pointer instead of
+/// threading a dozen-plus individual parameters through every helper.
+const SiteContext = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    project_name: []const u8,
+    mods: []const symbols.Module,
+    pages: []const PageNavItem,
+    emoji_provider: emoji.Provider,
+    theme: Theme,
+    /// Directory of the conf file; used to resolve relative image paths in pages.
+    /// Null when running without a conf file.
+    conf_dir: ?[]const u8,
+    /// Slug of the page rendered as `index.html`, if any.
+    home_slug: ?[]const u8,
+    /// When false (default), pub consts whose value is an @import are hidden.
+    show_imports: bool,
+    /// Repository URL from the `"repo"` config key, or null if absent.
+    repo_url: ?[]const u8,
+    cache: *cache_mod.Cache,
+    type_index: TypeIndex,
+    progress: *Progress,
+};
+
+// ---------------------------------------------------------------------------
 // Internal write buffer
 // ---------------------------------------------------------------------------
 
+/// A page's output buffer. Deliberately just bytes plus an allocator — page
+/// content and site-wide settings live on `SiteContext`, not here.
 const Buf = struct {
     list: std.ArrayList(u8),
     alloc: std.mem.Allocator,
-    emoji_provider: emoji.Provider,
-    theme: Theme,
-    /// Set for API pages so type names can be linked.
-    type_index: ?*const TypeIndex = null,
-    current_module: []const u8 = "",
-    /// Slug of the guide rendered as index.html, if any.
-    home_slug: ?[]const u8 = null,
-    /// When false (default), pub consts whose value is an @import are hidden.
-    show_imports: bool = false,
-    /// Repository URL from the `"repo"` config key; shown as an icon in the sidebar logo.
-    repo_url: ?[]const u8 = null,
-    /// Project display name; set by writeHeader, consumed by writeFooter.
-    project_name: []const u8 = "",
 
-    fn init(alloc: std.mem.Allocator, provider: emoji.Provider, theme: Theme) Buf {
-        return .{ .list = .empty, .alloc = alloc, .emoji_provider = provider, .theme = theme };
+    fn init(alloc: std.mem.Allocator) Buf {
+        return .{ .list = .empty, .alloc = alloc };
     }
     fn deinit(self: *Buf) void {
         self.list.deinit(self.alloc);
@@ -245,11 +265,12 @@ fn htmlEscape(buf: *Buf, text: []const u8) !void {
 }
 
 /// Emit `type_src` with known type names wrapped in `<a>` links.
-/// Falls back to plain HTML escaping when no type index is set.
 /// `skip_name`: the current container's name; its occurrences are not linked
 /// (avoids a self-referential link when rendering a type's own methods).
-fn writeTypeSrc(buf: *Buf, type_src: []const u8, skip_name: ?[]const u8) !void {
-    const idx = buf.type_index orelse return htmlEscape(buf, type_src);
+/// `current_module`: the module the containing page belongs to, so a
+/// same-module reference gets a fragment-only href.
+fn writeTypeSrc(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, type_src: []const u8, skip_name: ?[]const u8) !void {
+    const idx = &ctx.type_index;
     var i: usize = 0;
     while (i < type_src.len) {
         const c = type_src[i];
@@ -264,7 +285,7 @@ fn writeTypeSrc(buf: *Buf, type_src: []const u8, skip_name: ?[]const u8) !void {
             if (!is_skip) {
                 if (idx.get(ident)) |ref| {
                     // Same module → fragment-only href; other module → sibling file.
-                    if (std.mem.eql(u8, ref.module_name, buf.current_module)) {
+                    if (std.mem.eql(u8, ref.module_name, current_module)) {
                         try buf.print(
                             "<a href=\"#sym-{s}\" class=\"type-link\">{s}</a>",
                             .{ ref.anchor_name, ident },
@@ -416,16 +437,13 @@ fn linkCodeSymbols(
     return out.toOwnedSlice(allocator);
 }
 
-fn writeDoc(buf: *Buf, doc: []const u8) !void {
+fn writeDoc(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, doc: []const u8) !void {
     const raw = try markdown.toHtml(buf.alloc, doc);
     defer buf.alloc.free(raw);
-    const with_emoji = try emoji.replaceInHtml(buf.alloc, raw, buf.emoji_provider);
+    const with_emoji = try emoji.replaceInHtml(buf.alloc, raw, ctx.emoji_provider);
     defer buf.alloc.free(with_emoji);
-    const html: []const u8 = if (buf.type_index) |idx| blk: {
-        const linked = try linkCodeSymbols(buf.alloc, with_emoji, idx, buf.current_module);
-        break :blk linked;
-    } else with_emoji;
-    defer if (buf.type_index != null) buf.alloc.free(html);
+    const html = try linkCodeSymbols(buf.alloc, with_emoji, &ctx.type_index, current_module);
+    defer buf.alloc.free(html);
     try buf.writeAll("<div class=\"symbol-doc\">");
     try buf.writeAll(html);
     try buf.writeAll("</div>\n");
@@ -438,8 +456,8 @@ fn writeDoc(buf: *Buf, doc: []const u8) !void {
 /// Recursively write a module nav `<li>` with any child modules nested inside.
 fn writeModuleNavItem(
     buf: *Buf,
+    ctx: *const SiteContext,
     mod: symbols.Module,
-    all_mods: []const symbols.Module,
     active_module: ?[]const u8,
     prefix: []const u8,
 ) !void {
@@ -451,7 +469,7 @@ fn writeModuleNavItem(
 
     // Emit children (modules whose parent_name == this module's name).
     var has_children = false;
-    for (all_mods) |child| {
+    for (ctx.mods) |child| {
         if (child.parent_name) |pn| {
             if (std.mem.eql(u8, pn, mod.name)) {
                 has_children = true;
@@ -461,10 +479,10 @@ fn writeModuleNavItem(
     }
     if (has_children) {
         try buf.writeAll("\n<ul class=\"nav-children\">\n");
-        for (all_mods) |child| {
+        for (ctx.mods) |child| {
             if (child.parent_name) |pn| {
                 if (std.mem.eql(u8, pn, mod.name))
-                    try writeModuleNavItem(buf, child, all_mods, active_module, prefix);
+                    try writeModuleNavItem(buf, ctx, child, active_module, prefix);
             }
         }
         try buf.writeAll("</ul>\n");
@@ -478,6 +496,7 @@ fn writeModuleNavItem(
 
 fn writePageNavItems(
     buf: *Buf,
+    ctx: *const SiteContext,
     items: []const PageNavItem,
     active_page: ?[]const u8,
     prefix: []const u8,
@@ -487,7 +506,7 @@ fn writePageNavItems(
             .entry => |e| {
                 const active = if (active_page) |ap| std.mem.eql(u8, ap, e.slug) else false;
                 const cls: []const u8 = if (active) " class=\"active\"" else "";
-                const is_home = if (buf.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                const is_home = if (ctx.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
                 if (is_home) {
                     try buf.print("<li><a href=\"{s}/index.html\"{s}>", .{ prefix, cls });
                 } else {
@@ -500,7 +519,7 @@ fn writePageNavItems(
                 try buf.writeAll("<details class=\"nav-subsection\" open>\n<summary>");
                 try htmlEscape(buf, s.title);
                 try buf.writeAll("</summary>\n<ul>\n");
-                try writePageNavItems(buf, s.items, active_page, prefix);
+                try writePageNavItems(buf, ctx, s.items, active_page, prefix);
                 try buf.writeAll("</ul>\n</details>\n");
             },
         }
@@ -511,16 +530,14 @@ fn writePageNavItems(
 /// The per-page TOC aside is written after the main content via writeApiToc / writeGuideToc.
 fn writeHeader(
     buf: *Buf,
+    ctx: *const SiteContext,
     title: []const u8,
-    project_name: []const u8,
-    mods: []const symbols.Module,
-    pages: []const PageNavItem,
     active_module: ?[]const u8,
     active_page: ?[]const u8,
     prefix: []const u8,
 ) !void {
     try buf.writeAll("<!DOCTYPE html>\n<html lang=\"en\"");
-    if (buf.theme.toAttr()) |attr| try buf.print(" data-theme=\"{s}\"", .{attr});
+    if (ctx.theme.toAttr()) |attr| try buf.print(" data-theme=\"{s}\"", .{attr});
     try buf.print(
         \\>
         \\<head>
@@ -545,7 +562,7 @@ fn writeHeader(
         \\<button class="mob-btn" id="nav-toggle" aria-label="Open navigation"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
         \\<a class="mob-title" href="{s}/index.html">
     , .{prefix});
-    try htmlEscape(buf, project_name);
+    try htmlEscape(buf, ctx.project_name);
     try buf.writeAll(
         \\</a>
         \\<button class="mob-btn" id="toc-toggle" aria-label="On this page"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1.5" fill="currentColor"/><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="3" cy="18" r="1.5" fill="currentColor"/></svg></button>
@@ -554,12 +571,11 @@ fn writeHeader(
         \\<nav class="sidebar">
         \\
     );
-    buf.project_name = project_name;
     try buf.writeAll("<div class=\"logo-row\">");
     try buf.print("<a class=\"logo\" href=\"{s}/index.html\">", .{prefix});
-    try htmlEscape(buf, project_name);
+    try htmlEscape(buf, ctx.project_name);
     try buf.writeAll("</a>");
-    if (buf.repo_url) |rurl| {
+    if (ctx.repo_url) |rurl| {
         try buf.writeAll("<a class=\"repo-link\" href=\"");
         try htmlEscape(buf, rurl);
         try buf.writeAll("\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"Source repository\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"6\" y1=\"3\" x2=\"6\" y2=\"15\"/><circle cx=\"18\" cy=\"6\" r=\"3\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><path d=\"M18 9a9 9 0 0 1-9 9\"/></svg></a>");
@@ -574,18 +590,18 @@ fn writeHeader(
         \\
     );
 
-    if (pagesHaveEntries(pages)) {
+    if (pagesHaveEntries(ctx.pages)) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Pages</summary>\n<ul>\n");
-        try writePageNavItems(buf, pages, active_page, prefix);
+        try writePageNavItems(buf, ctx, ctx.pages, active_page, prefix);
         try buf.writeAll("</ul>\n</details>\n");
     }
 
-    if (mods.len > 0) {
+    if (ctx.mods.len > 0) {
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
-        for (mods) |mod| {
+        for (ctx.mods) |mod| {
             // Only render top-level (root) modules here; children are nested inside their parent.
             if (mod.parent_name == null)
-                try writeModuleNavItem(buf, mod, mods, active_module, prefix);
+                try writeModuleNavItem(buf, ctx, mod, active_module, prefix);
         }
         try buf.writeAll("</ul>\n</details>\n");
     }
@@ -593,16 +609,16 @@ fn writeHeader(
     try buf.writeAll("</nav>\n<div class=\"page-body\">\n<main>\n");
 }
 
-fn writeFooter(buf: *Buf) !void {
+fn writeFooter(buf: *Buf, ctx: *const SiteContext) !void {
     try buf.writeAll("\n</main>\n<footer class=\"site-footer\">\n<span class=\"footer-project\">");
-    if (buf.repo_url) |rurl| {
+    if (ctx.repo_url) |rurl| {
         try buf.writeAll("<a href=\"");
         try htmlEscape(buf, rurl);
         try buf.writeAll("\" target=\"_blank\" rel=\"noopener noreferrer\">");
-        try htmlEscape(buf, buf.project_name);
+        try htmlEscape(buf, ctx.project_name);
         try buf.writeAll("</a>");
     } else {
-        try htmlEscape(buf, buf.project_name);
+        try htmlEscape(buf, ctx.project_name);
     }
     try buf.writeAll("</span>\n<span class=\"footer-generated\">Generated with <a href=\"" ++ ZKDOCS_REPO_URL ++ "\" target=\"_blank\" rel=\"noopener noreferrer\">zkdocs</a> " ++ ZKDOCS_VERSION ++ "</span>\n</footer>\n</div>\n</body>\n</html>\n");
 }
@@ -613,7 +629,7 @@ fn writeFooter(buf: *Buf) !void {
 
 /// Emit a collapsible "On this page" TOC for an API module page.
 /// Shows Types → container names (with indented methods), Functions, Constants.
-fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
+fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !void {
     var has_types = false;
     var has_fns = false;
     var has_consts = false;
@@ -627,7 +643,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
                 if (f.is_pub and f.generic_return == null) has_fns = true;
             },
             .variable => if (sym.variable) |v| {
-                if (v.is_pub and (buf.show_imports or !v.is_import)) has_consts = true;
+                if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
             },
             else => {},
         }
@@ -724,7 +740,7 @@ fn writeApiToc(buf: *Buf, mod: symbols.Module) !void {
             if (sym.kind != .variable) continue;
             const v = sym.variable orelse continue;
             if (!v.is_pub) continue;
-            if (!buf.show_imports and v.is_import) continue;
+            if (!ctx.show_imports and v.is_import) continue;
             try buf.print("<li><a href=\"#sym-{s}\">", .{v.name});
             try htmlEscape(buf, v.name);
             try buf.writeAll("</a></li>\n");
@@ -773,7 +789,7 @@ fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
 // Symbol renderers
 // ---------------------------------------------------------------------------
 
-fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void {
+fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, f: symbols.Function, parent_container: ?[]const u8) !void {
     if (parent_container) |pc| {
         try buf.print("<div class=\"symbol\" id=\"sym-{s}-{s}\">\n", .{ pc, f.name });
     } else {
@@ -790,20 +806,20 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
         if (i > 0) try buf.writeAll(", ");
         if (p.name) |n| try buf.print("<span class=\"param-name\">{s}</span>: ", .{n});
         try buf.writeAll("<span class=\"type-name\">");
-        try writeTypeSrc(buf, p.type_src, parent_container);
+        try writeTypeSrc(buf, ctx, current_module, p.type_src, parent_container);
         try buf.writeAll("</span>");
     }
     try buf.writeAll(")");
     if (f.return_type_src) |r| {
         try buf.writeAll(" <span class=\"type-name\">");
-        try writeTypeSrc(buf, r, parent_container);
+        try writeTypeSrc(buf, ctx, current_module, r, parent_container);
         try buf.writeAll("</span>");
     }
     try buf.writeAll("</code></div>\n");
     if (f.generic_return != null) {
         try buf.writeAll("<span class=\"pill-generic\">generic</span></div>\n");
     }
-    if (f.doc) |doc| try writeDoc(buf, doc);
+    if (f.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
     if (f.body_src) |body| {
         const highlighted = markdown.highlight.highlightZig(buf.alloc, body) catch blk: {
@@ -834,7 +850,7 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
                 try buf.writeAll("<tr><td>");
                 try htmlEscape(buf, field.name);
                 try buf.writeAll("</td><td>");
-                if (field.type_src) |t| try writeTypeSrc(buf, t, f.name);
+                if (field.type_src) |t| try writeTypeSrc(buf, ctx, current_module, t, f.name);
                 try buf.writeAll("</td><td class=\"field-doc\">");
                 if (field.doc) |d| try htmlEscape(buf, d);
                 try buf.writeAll("</td></tr>\n");
@@ -855,7 +871,7 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
             try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
             for (gr.decls.items) |d| {
                 if (d.kind == .function) if (d.function) |mf| {
-                    if (mf.is_pub) try renderFn(buf, mf, f.name);
+                    if (mf.is_pub) try renderFn(buf, ctx, current_module, mf, f.name);
                 };
             }
             try buf.writeAll("</div>\n");
@@ -865,7 +881,7 @@ fn renderFn(buf: *Buf, f: symbols.Function, parent_container: ?[]const u8) !void
     try buf.writeAll("</div>\n");
 }
 
-fn renderContainer(buf: *Buf, c: symbols.Container) !void {
+fn renderContainer(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, c: symbols.Container) !void {
     try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{c.name});
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (c.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
@@ -874,7 +890,7 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
         .{ @tagName(c.kind), c.name },
     );
     try buf.writeAll("</code></div>\n");
-    if (c.doc) |doc| try writeDoc(buf, doc);
+    if (c.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
     if (c.fields.len > 0) {
         try buf.writeAll(
@@ -886,7 +902,7 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
             try buf.writeAll("<tr><td>");
             try htmlEscape(buf, f.name);
             try buf.writeAll("</td><td>");
-            if (f.type_src) |t| try writeTypeSrc(buf, t, c.name);
+            if (f.type_src) |t| try writeTypeSrc(buf, ctx, current_module, t, c.name);
             try buf.writeAll("</td><td class=\"field-doc\">");
             if (f.doc) |d| try htmlEscape(buf, d);
             try buf.writeAll("</td></tr>\n");
@@ -907,7 +923,7 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
         try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
         for (c.decls.items) |d| {
             if (d.kind == .function) if (d.function) |f| {
-                if (f.is_pub) try renderFn(buf, f, c.name);
+                if (f.is_pub) try renderFn(buf, ctx, current_module, f, c.name);
             };
         }
         try buf.writeAll("</div>\n");
@@ -916,7 +932,7 @@ fn renderContainer(buf: *Buf, c: symbols.Container) !void {
     try buf.writeAll("</div>\n");
 }
 
-fn renderVar(buf: *Buf, v: symbols.Variable) !void {
+fn renderVar(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, v: symbols.Variable) !void {
     try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{v.name});
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (v.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
@@ -924,7 +940,7 @@ fn renderVar(buf: *Buf, v: symbols.Variable) !void {
     try buf.print("<span class=\"fn-name\">{s}</span>", .{v.name});
     if (v.type_src) |t| {
         try buf.writeAll(": <span class=\"type-name\">");
-        try writeTypeSrc(buf, t, null);
+        try writeTypeSrc(buf, ctx, current_module, t, null);
         try buf.writeAll("</span>");
     }
     if (v.value_src) |val| {
@@ -943,7 +959,7 @@ fn renderVar(buf: *Buf, v: symbols.Variable) !void {
             try buf.writeAll("</code></pre></details>\n");
         }
     }
-    if (v.doc) |doc| try writeDoc(buf, doc);
+    if (v.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
     try buf.writeAll("</div>\n");
 }
 
@@ -1362,11 +1378,11 @@ fn appendSearchDoc(
 
 /// Recursively render the "Pages" list on the index page, preserving
 /// nested `<ul>`s for each level of section nesting.
-fn writeIndexPageList(buf: *Buf, items: []const PageNavItem, home_slug: ?[]const u8) !void {
+fn writeIndexPageList(buf: *Buf, ctx: *const SiteContext, items: []const PageNavItem) !void {
     for (items) |item| {
         switch (item) {
             .entry => |e| {
-                const is_home = if (home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+                const is_home = if (ctx.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
                 if (is_home) {
                     try buf.writeAll("<li><a href=\"./index.html\">");
                 } else {
@@ -1379,26 +1395,19 @@ fn writeIndexPageList(buf: *Buf, items: []const PageNavItem, home_slug: ?[]const
                 try buf.writeAll("<li><strong>");
                 try htmlEscape(buf, s.title);
                 try buf.writeAll("</strong>\n<ul class=\"module-list\">\n");
-                try writeIndexPageList(buf, s.items, home_slug);
+                try writeIndexPageList(buf, ctx, s.items);
                 try buf.writeAll("</ul></li>\n");
             },
         }
     }
 }
 
-fn writeSearchIndex(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    out_dir: *std.Io.Dir,
-    mods: []const symbols.Module,
-    pages: []const PageNavItem,
-    home_slug: ?[]const u8,
-) !void {
+fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
     var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
+    defer buf.deinit(ctx.allocator);
 
     // Assign to a global so the index works on file:// URLs (fetch() is blocked there).
-    try buf.appendSlice(allocator, "window.ZKDOCS_SEARCH_INDEX=[");
+    try buf.appendSlice(ctx.allocator, "window.ZKDOCS_SEARCH_INDEX=[");
     var id: usize = 0;
 
     // Page entries (guides and examples unified)
@@ -1408,57 +1417,57 @@ fn writeSearchIndex(
         home_slug: ?[]const u8,
         id: *usize,
     };
-    try visitPageEntries(pages, SearchVisitCtx{
+    try visitPageEntries(ctx.pages, SearchVisitCtx{
         .buf = &buf,
-        .allocator = allocator,
-        .home_slug = home_slug,
+        .allocator = ctx.allocator,
+        .home_slug = ctx.home_slug,
         .id = &id,
     }, struct {
-        fn visit(ctx: SearchVisitCtx, e: PageEntry) !void {
-            const is_home = if (ctx.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
+        fn visit(sctx: SearchVisitCtx, e: PageEntry) !void {
+            const is_home = if (sctx.home_slug) |hs| std.mem.eql(u8, hs, e.slug) else false;
             const url = if (is_home)
-                try ctx.allocator.dupe(u8, "index.html")
+                try sctx.allocator.dupe(u8, "index.html")
             else
-                try std.fmt.allocPrint(ctx.allocator, "page/{s}.html", .{e.slug});
-            defer ctx.allocator.free(url);
+                try std.fmt.allocPrint(sctx.allocator, "page/{s}.html", .{e.slug});
+            defer sctx.allocator.free(url);
             const doc_type: []const u8 = switch (e.mode) {
                 .markdown => "guide",
                 .zig_prose, .zig_raw => "example",
             };
-            if (ctx.id.* > 0) try ctx.buf.append(ctx.allocator, ',');
-            try appendSearchDoc(ctx.buf, ctx.allocator, ctx.id.*, e.title, e.content, url, doc_type);
-            ctx.id.* += 1;
+            if (sctx.id.* > 0) try sctx.buf.append(sctx.allocator, ',');
+            try appendSearchDoc(sctx.buf, sctx.allocator, sctx.id.*, e.title, e.content, url, doc_type);
+            sctx.id.* += 1;
         }
     }.visit);
 
     // API symbols
-    for (mods) |mod| {
+    for (ctx.mods) |mod| {
         for (mod.symbols.items) |sym| {
             switch (sym.kind) {
                 .function => if (sym.function) |f| {
                     if (f.is_pub) {
-                        const url = try std.fmt.allocPrint(allocator, "api/{s}.html#sym-{s}", .{ mod.name, f.name });
-                        defer allocator.free(url);
-                        if (id > 0) try buf.append(allocator, ',');
-                        try appendSearchDoc(&buf, allocator, id, f.name, f.doc orelse "", url, "api");
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, f.name });
+                        defer ctx.allocator.free(url);
+                        if (id > 0) try buf.append(ctx.allocator, ',');
+                        try appendSearchDoc(&buf, ctx.allocator, id, f.name, f.doc orelse "", url, "api");
                         id += 1;
                     }
                 },
                 .container => if (sym.container) |c| {
                     if (c.is_pub) {
-                        const url = try std.fmt.allocPrint(allocator, "api/{s}.html#sym-{s}", .{ mod.name, c.name });
-                        defer allocator.free(url);
-                        if (id > 0) try buf.append(allocator, ',');
-                        try appendSearchDoc(&buf, allocator, id, c.name, c.doc orelse "", url, "api");
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, c.name });
+                        defer ctx.allocator.free(url);
+                        if (id > 0) try buf.append(ctx.allocator, ',');
+                        try appendSearchDoc(&buf, ctx.allocator, id, c.name, c.doc orelse "", url, "api");
                         id += 1;
                     }
                 },
                 .variable => if (sym.variable) |v| {
                     if (v.is_pub) {
-                        const url = try std.fmt.allocPrint(allocator, "api/{s}.html#sym-{s}", .{ mod.name, v.name });
-                        defer allocator.free(url);
-                        if (id > 0) try buf.append(allocator, ',');
-                        try appendSearchDoc(&buf, allocator, id, v.name, v.doc orelse "", url, "api");
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, v.name });
+                        defer ctx.allocator.free(url);
+                        if (id > 0) try buf.append(ctx.allocator, ',');
+                        try appendSearchDoc(&buf, ctx.allocator, id, v.name, v.doc orelse "", url, "api");
                         id += 1;
                     }
                 },
@@ -1467,27 +1476,20 @@ fn writeSearchIndex(
         }
     }
 
-    try buf.appendSlice(allocator, "];");
+    try buf.appendSlice(ctx.allocator, "];");
 
-    const file = try out_dir.createFile(io, "assets/search-data.js", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, buf.items);
+    const file = try out_dir.createFile(ctx.io, "assets/search-data.js", .{});
+    defer file.close(ctx.io);
+    try file.writeStreamingAll(ctx.io, buf.items);
 }
 
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Generate the full HTML site under `out_path`.
-///
-/// Output layout:
-///   out_path/
-///     index.html
-///     api/<module>.html     (one per module, pub symbols only)
-///     page/<slug>.html      (one per page entry in zkdocs.conf)
-pub fn renderSite(
-    io: std.Io,
-    allocator: std.mem.Allocator,
+/// Public options for `renderSite`; converted internally into the
+/// `SiteContext` threaded through every page renderer.
+pub const RenderSiteOptions = struct {
     out_path: []const u8,
     project_name: []const u8,
     mods: []const symbols.Module,
@@ -1512,23 +1514,53 @@ pub fn renderSite(
     show_imports: bool,
     /// Repository URL from the `"repo"` config key, or null if absent.
     repo_url: ?[]const u8,
-) !void {
-    var out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, out_path, .{});
+};
+
+/// Generate the full HTML site under `opts.out_path`.
+///
+/// Output layout:
+///   out_path/
+///     index.html
+///     api/<module>.html     (one per module, pub symbols only)
+///     page/<slug>.html      (one per page entry in zkdocs.conf)
+pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOptions) !void {
+    // Build type index once for cross-module type linking.
+    var type_index = try buildTypeIndex(allocator, opts.mods);
+    defer type_index.deinit();
+
+    var ctx = SiteContext{
+        .io = io,
+        .allocator = allocator,
+        .project_name = opts.project_name,
+        .mods = opts.mods,
+        .pages = opts.pages,
+        .emoji_provider = opts.emoji_provider,
+        .theme = opts.theme,
+        .conf_dir = opts.conf_dir,
+        .home_slug = opts.home_slug,
+        .show_imports = opts.show_imports,
+        .repo_url = opts.repo_url,
+        .cache = opts.cache,
+        .type_index = type_index,
+        .progress = opts.progress,
+    };
+
+    var out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, opts.out_path, .{});
     defer out_dir.close(io);
 
     // ── Determine what changed since the last run ────────────────────────────
-    const conf_changed = if (conf_abs_path) |cp|
-        !cache.confUnchanged(cp)
+    const conf_changed = if (opts.conf_abs_path) |cp|
+        !ctx.cache.confUnchanged(cp)
     else
         false;
 
     // Check whether any asset file (e.g. logo image) changed since the last run.
-    const assets_changed = !cache.allAssetsUnchanged();
+    const assets_changed = !ctx.cache.allAssetsUnchanged();
 
     // Check whether any source file has changed since the last run.
     var sources_changed = conf_changed or assets_changed;
-    for (mods) |mod| {
-        if (!cache.sourceUnchanged(mod.abs_path)) sources_changed = true;
+    for (ctx.mods) |mod| {
+        if (!ctx.cache.sourceUnchanged(mod.abs_path)) sources_changed = true;
     }
 
     try out_dir.createDirPath(io, "api");
@@ -1550,22 +1582,18 @@ pub fn renderSite(
         defer f.close(io);
         try f.writeStreamingAll(io, SEARCH_JS);
     }
-    try writeSearchIndex(io, allocator, &out_dir, mods, pages, home_slug);
+    try writeSearchIndex(&ctx, &out_dir);
 
-    if (pagesHaveEntries(pages)) try out_dir.createDirPath(io, "page");
-
-    // Build type index once for cross-module type linking.
-    var type_index = try buildTypeIndex(allocator, mods);
-    defer type_index.deinit();
+    if (pagesHaveEntries(ctx.pages)) try out_dir.createDirPath(io, "page");
 
     // ── index.html ──────────────────────────────────────────────────────────
 
     // Find the home page entry if one is designated.
     const home_entry: ?PageEntry = blk: {
-        const hs = home_slug orelse break :blk null;
+        const hs = ctx.home_slug orelse break :blk null;
         const HomeFinder = struct { slug: []const u8, found: ?PageEntry = null };
         var finder = HomeFinder{ .slug = hs };
-        visitPageEntries(pages, &finder, struct {
+        visitPageEntries(ctx.pages, &finder, struct {
             fn visit(f: *HomeFinder, e: PageEntry) !void {
                 if (f.found == null and std.mem.eql(u8, e.slug, f.slug)) f.found = e;
             }
@@ -1574,38 +1602,36 @@ pub fn renderSite(
     };
 
     const home_changed = if (home_entry) |he|
-        he.src_path.len > 0 and !cache.guideUnchanged(he.src_path)
+        he.src_path.len > 0 and !ctx.cache.guideUnchanged(he.src_path)
     else
         false;
 
     if (!conf_changed and !sources_changed and !home_changed) {
-        progress.begin("index up to date");
+        ctx.progress.begin("index up to date");
     } else {
-        progress.begin("writing index");
+        ctx.progress.begin("writing index");
     }
 
     if (conf_changed or sources_changed or home_changed) {
         if (home_entry) |he| {
             // Render the designated page as index.html.
             switch (he.mode) {
-                .markdown => try renderMarkdownPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, conf_dir, home_slug, true, cache, repo_url),
-                .zig_prose, .zig_raw => try renderZigPage(io, allocator, &out_dir, he, project_name, mods, pages, emoji_provider, theme, home_slug, true, repo_url),
+                .markdown => try renderMarkdownPage(&ctx, &out_dir, he, true),
+                .zig_prose, .zig_raw => try renderZigPage(&ctx, &out_dir, he, true),
             }
         } else {
-            var buf = Buf.init(allocator, emoji_provider, theme);
+            var buf = Buf.init(allocator);
             defer buf.deinit();
-            buf.home_slug = home_slug;
-            buf.repo_url = repo_url;
 
-            try writeHeader(&buf, project_name, project_name, mods, pages, null, null, ".");
+            try writeHeader(&buf, &ctx, ctx.project_name, null, null, ".");
 
             try buf.writeAll("<h1>");
-            try htmlEscape(&buf, project_name);
+            try htmlEscape(&buf, ctx.project_name);
             try buf.writeAll("</h1>\n");
 
-            if (mods.len > 0) {
+            if (ctx.mods.len > 0) {
                 try buf.writeAll("<h2>Modules</h2>\n<ul class=\"module-list\">\n");
-                for (mods) |mod| {
+                for (ctx.mods) |mod| {
                     try buf.print("<li><a href=\"./api/{s}.html\">", .{mod.name});
                     try htmlEscape(&buf, mod.name);
                     try buf.writeAll("</a>");
@@ -1634,13 +1660,13 @@ pub fn renderSite(
                 try buf.writeAll("</ul>\n");
             }
 
-            if (pagesHaveEntries(pages)) {
+            if (pagesHaveEntries(ctx.pages)) {
                 try buf.writeAll("<h2>Pages</h2>\n<ul class=\"module-list\">\n");
-                try writeIndexPageList(&buf, pages, home_slug);
+                try writeIndexPageList(&buf, &ctx, ctx.pages);
                 try buf.writeAll("</ul>\n");
             }
 
-            try writeFooter(&buf);
+            try writeFooter(&buf, &ctx);
 
             const file = try out_dir.createFile(io, "index.html", .{});
             defer file.close(io);
@@ -1652,8 +1678,8 @@ pub fn renderSite(
     {
         // Count only the modules that actually need re-rendering.
         var n_to_render: usize = 0;
-        for (mods) |mod| {
-            if (conf_changed or assets_changed or !cache.sourceUnchanged(mod.abs_path))
+        for (ctx.mods) |mod| {
+            if (conf_changed or assets_changed or !ctx.cache.sourceUnchanged(mod.abs_path))
                 n_to_render += 1;
         }
         var label_buf: [64]u8 = undefined;
@@ -1661,35 +1687,30 @@ pub fn renderSite(
             "api pages up to date"
         else
             std.fmt.bufPrint(&label_buf, "rendering api ({d}/{d} module{s})", .{
-                n_to_render, mods.len, if (mods.len == 1) "" else "s",
+                n_to_render, ctx.mods.len, if (ctx.mods.len == 1) "" else "s",
             }) catch "rendering api";
-        progress.begin(label);
+        ctx.progress.begin(label);
     }
     {
-        for (mods) |mod| {
+        for (ctx.mods) |mod| {
             // Skip this module if its source and the conf/assets are all unchanged.
-            if (!conf_changed and !assets_changed and cache.sourceUnchanged(mod.abs_path))
+            if (!conf_changed and !assets_changed and ctx.cache.sourceUnchanged(mod.abs_path))
                 continue;
             Progress.setCurrent(mod.name);
-            var buf = Buf.init(allocator, emoji_provider, theme);
+            var buf = Buf.init(allocator);
             defer buf.deinit();
-            buf.type_index = &type_index;
-            buf.current_module = mod.name;
-            buf.home_slug = home_slug;
-            buf.show_imports = show_imports;
-            buf.repo_url = repo_url;
 
-            const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, project_name });
+            const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, ctx.project_name });
             defer allocator.free(title);
 
-            try writeHeader(&buf, title, project_name, mods, pages, mod.name, null, "..");
+            try writeHeader(&buf, &ctx, title, mod.name, null, "..");
 
             try buf.writeAll("<h1>");
             try htmlEscape(&buf, mod.name);
             try buf.writeAll("</h1>\n<div class=\"mod-path\">");
             try htmlEscape(&buf, mod.path);
             try buf.writeAll("</div>\n");
-            if (mod.doc) |doc| try writeDoc(&buf, doc);
+            if (mod.doc) |doc| try writeDoc(&buf, &ctx, mod.name, doc);
 
             var has_types = false;
             var has_fns = false;
@@ -1704,7 +1725,7 @@ pub fn renderSite(
                         if (f.is_pub and f.generic_return == null) has_fns = true;
                     },
                     .variable => if (sym.variable) |v| {
-                        if (v.is_pub and (show_imports or !v.is_import)) has_consts = true;
+                        if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
                     },
                     else => {},
                 }
@@ -1714,20 +1735,20 @@ pub fn renderSite(
                 try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
                 for (mod.symbols.items) |sym| {
                     if (sym.kind == .container) if (sym.container) |c| {
-                        if (c.is_pub) try renderContainer(&buf, c);
+                        if (c.is_pub) try renderContainer(&buf, &ctx, mod.name, c);
                     };
                 }
                 for (mod.symbols.items) |sym| {
                     if (sym.kind != .function) continue;
                     const f = sym.function orelse continue;
-                    if (f.is_pub and f.generic_return != null) try renderFn(&buf, f, null);
+                    if (f.is_pub and f.generic_return != null) try renderFn(&buf, &ctx, mod.name, f, null);
                 }
             }
             if (has_fns) {
                 try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
                 for (mod.symbols.items) |sym| {
                     if (sym.kind == .function) if (sym.function) |f| {
-                        if (f.is_pub and f.generic_return == null) try renderFn(&buf, f, null);
+                        if (f.is_pub and f.generic_return == null) try renderFn(&buf, &ctx, mod.name, f, null);
                     };
                 }
             }
@@ -1735,13 +1756,13 @@ pub fn renderSite(
                 try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
                 for (mod.symbols.items) |sym| {
                     if (sym.kind == .variable) if (sym.variable) |v| {
-                        if (v.is_pub and (show_imports or !v.is_import)) try renderVar(&buf, v);
+                        if (v.is_pub and (ctx.show_imports or !v.is_import)) try renderVar(&buf, &ctx, mod.name, v);
                     };
                 }
             }
 
-            try writeApiToc(&buf, mod);
-            try writeFooter(&buf);
+            try writeApiToc(&buf, &ctx, mod);
+            try writeFooter(&buf, &ctx);
 
             const filename = try std.fmt.allocPrint(allocator, "api/{s}.html", .{mod.name});
             defer allocator.free(filename);
@@ -1749,14 +1770,14 @@ pub fn renderSite(
             defer file.close(io);
             try buf.flush(io, file);
         }
-        if (mods.len > 0) Progress.endFiles();
+        if (ctx.mods.len > 0) Progress.endFiles();
     }
 
     // ── page/ pages ──────────────────────────────────────────────────────────
-    if (pagesHaveEntries(pages)) {
+    if (pagesHaveEntries(ctx.pages)) {
         const Counter = struct { n: usize = 0 };
         var counter = Counter{};
-        try visitPageEntries(pages, &counter, struct {
+        try visitPageEntries(ctx.pages, &counter, struct {
             fn visit(c: *Counter, e: PageEntry) !void {
                 _ = e;
                 c.n += 1;
@@ -1767,49 +1788,29 @@ pub fn renderSite(
         const label = std.fmt.bufPrint(&label_buf, "rendering pages ({d} page{s})", .{
             counter.n, if (counter.n == 1) "" else "s",
         }) catch "rendering pages";
-        progress.begin(label);
+        ctx.progress.begin(label);
 
         const RenderPageCtx = struct {
-            io: std.Io,
-            allocator: std.mem.Allocator,
+            ctx: *const SiteContext,
             out_dir: *std.Io.Dir,
-            project_name: []const u8,
-            mods: []const symbols.Module,
-            pages: []const PageNavItem,
-            emoji_provider: emoji.Provider,
-            theme: Theme,
-            conf_dir: ?[]const u8,
-            home_slug: ?[]const u8,
-            cache: *cache_mod.Cache,
-            repo_url: ?[]const u8,
             conf_changed: bool,
             assets_changed: bool,
         };
-        try visitPageEntries(pages, RenderPageCtx{
-            .io = io,
-            .allocator = allocator,
+        try visitPageEntries(ctx.pages, RenderPageCtx{
+            .ctx = &ctx,
             .out_dir = &out_dir,
-            .project_name = project_name,
-            .mods = mods,
-            .pages = pages,
-            .emoji_provider = emoji_provider,
-            .theme = theme,
-            .conf_dir = conf_dir,
-            .home_slug = home_slug,
-            .cache = cache,
-            .repo_url = repo_url,
             .conf_changed = conf_changed,
             .assets_changed = assets_changed,
         }, struct {
-            fn visit(ctx: RenderPageCtx, e: PageEntry) !void {
-                if (ctx.home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) return;
+            fn visit(rctx: RenderPageCtx, e: PageEntry) !void {
+                if (rctx.ctx.home_slug) |hs| if (std.mem.eql(u8, hs, e.slug)) return;
                 // Skip if the page source, conf, and assets are all unchanged.
-                if (!ctx.conf_changed and !ctx.assets_changed and e.src_path.len > 0 and ctx.cache.guideUnchanged(e.src_path))
+                if (!rctx.conf_changed and !rctx.assets_changed and e.src_path.len > 0 and rctx.ctx.cache.guideUnchanged(e.src_path))
                     return;
                 Progress.setCurrent(e.slug);
                 switch (e.mode) {
-                    .markdown => try renderMarkdownPage(ctx.io, ctx.allocator, ctx.out_dir, e, ctx.project_name, ctx.mods, ctx.pages, ctx.emoji_provider, ctx.theme, ctx.conf_dir, ctx.home_slug, false, ctx.cache, ctx.repo_url),
-                    .zig_prose, .zig_raw => try renderZigPage(ctx.io, ctx.allocator, ctx.out_dir, e, ctx.project_name, ctx.mods, ctx.pages, ctx.emoji_provider, ctx.theme, ctx.home_slug, false, ctx.repo_url),
+                    .markdown => try renderMarkdownPage(rctx.ctx, rctx.out_dir, e, false),
+                    .zig_prose, .zig_raw => try renderZigPage(rctx.ctx, rctx.out_dir, e, false),
                 }
             }
         }.visit);
@@ -1817,14 +1818,14 @@ pub fn renderSite(
     }
 
     // ── Update and save build cache ──────────────────────────────────────────
-    if (conf_abs_path) |cp| cache.recordConf(cp) catch {};
-    for (mods) |mod| cache.recordSource(mod.abs_path) catch {};
-    try visitPageEntries(pages, cache, struct {
+    if (opts.conf_abs_path) |cp| ctx.cache.recordConf(cp) catch {};
+    for (ctx.mods) |mod| ctx.cache.recordSource(mod.abs_path) catch {};
+    try visitPageEntries(ctx.pages, ctx.cache, struct {
         fn visit(c: *cache_mod.Cache, e: PageEntry) !void {
             if (e.src_path.len > 0) c.recordGuide(e.src_path) catch {};
         }
     }.visit);
-    cache.save(out_path) catch |err| {
+    ctx.cache.save(opts.out_path) catch |err| {
         std.debug.print("  warning: could not write build cache: {}\n", .{err});
     };
 }
@@ -2101,28 +2102,19 @@ fn processImages(
 }
 
 fn renderMarkdownPage(
-    io: std.Io,
-    allocator: std.mem.Allocator,
+    ctx: *const SiteContext,
     out_dir: *std.Io.Dir,
     entry: PageEntry,
-    project_name: []const u8,
-    mods: []const symbols.Module,
-    pages: []const PageNavItem,
-    emoji_provider: emoji.Provider,
-    theme: Theme,
-    conf_dir: ?[]const u8,
-    home_slug: ?[]const u8,
     /// When true, output to `index.html` with prefix `.` instead of `page/{slug}.html`.
     is_home: bool,
-    cache: *cache_mod.Cache,
-    repo_url: ?[]const u8,
 ) !void {
-    var buf = Buf.init(allocator, emoji_provider, theme);
-    defer buf.deinit();
-    buf.home_slug = home_slug;
-    buf.repo_url = repo_url;
+    const io = ctx.io;
+    const allocator = ctx.allocator;
 
-    const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
+    var buf = Buf.init(allocator);
+    defer buf.deinit();
+
+    const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, ctx.project_name });
     defer allocator.free(title);
 
     const prefix: []const u8 = if (is_home)
@@ -2132,18 +2124,18 @@ fn renderMarkdownPage(
     else
         "..";
 
-    try writeHeader(&buf, title, project_name, mods, pages, null, entry.slug, prefix);
+    try writeHeader(&buf, ctx, title, null, entry.slug, prefix);
 
     const raw = try markdown.toHtml(allocator, entry.content);
     defer allocator.free(raw);
-    const with_emoji = try emoji.replaceInHtml(allocator, raw, emoji_provider);
+    const with_emoji = try emoji.replaceInHtml(allocator, raw, ctx.emoji_provider);
     defer allocator.free(with_emoji);
-    const with_images = if (conf_dir) |cd|
-        try processImages(io, allocator, with_emoji, cd, out_dir.*, prefix, cache)
+    const with_images = if (ctx.conf_dir) |cd|
+        try processImages(io, allocator, with_emoji, cd, out_dir.*, prefix, ctx.cache)
     else
         try allocator.dupe(u8, with_emoji);
     defer allocator.free(with_images);
-    const html = try resolveInternalLinks(allocator, with_images, mods, prefix);
+    const html = try resolveInternalLinks(allocator, with_images, ctx.mods, prefix);
     defer allocator.free(html);
 
     try buf.writeAll("<div class=\"guide-content\">\n");
@@ -2151,7 +2143,7 @@ fn renderMarkdownPage(
     try buf.writeAll("</div>\n");
 
     try writeGuideToc(&buf, entry.content);
-    try writeFooter(&buf);
+    try writeFooter(&buf, ctx);
 
     const filename = if (is_home)
         try allocator.dupe(u8, "index.html")
@@ -2173,13 +2165,14 @@ fn renderMarkdownPage(
 // Literate example pages
 // ---------------------------------------------------------------------------
 
-fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []const example_mod.Segment, mods: []const symbols.Module, prefix: []const u8) !void {
+fn renderExampleSegments(buf: *Buf, ctx: *const SiteContext, segments: []const example_mod.Segment, prefix: []const u8) !void {
+    const allocator = ctx.allocator;
     for (segments) |seg| {
         switch (seg.kind) {
             .prose => {
                 const raw = try markdown.toHtml(allocator, seg.text);
                 defer allocator.free(raw);
-                const html = try resolveInternalLinks(allocator, raw, mods, prefix);
+                const html = try resolveInternalLinks(allocator, raw, ctx.mods, prefix);
                 defer allocator.free(html);
                 if (seg.indent > 0) {
                     try buf.print("<div class=\"example-prose\" style=\"margin-left:{d}ch\">\n", .{seg.indent});
@@ -2212,7 +2205,7 @@ fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []co
                 try buf.writeAll("<details class=\"example-collapsed\">\n<summary>");
                 try htmlEscape(buf, label);
                 try buf.writeAll("</summary>\n");
-                try renderExampleSegments(buf, allocator, seg.children, mods, prefix);
+                try renderExampleSegments(buf, ctx, seg.children, prefix);
                 try buf.writeAll("</details>\n");
             },
         }
@@ -2220,26 +2213,19 @@ fn renderExampleSegments(buf: *Buf, allocator: std.mem.Allocator, segments: []co
 }
 
 fn renderZigPage(
-    io: std.Io,
-    allocator: std.mem.Allocator,
+    ctx: *const SiteContext,
     out_dir: *std.Io.Dir,
     entry: PageEntry,
-    project_name: []const u8,
-    mods: []const symbols.Module,
-    pages: []const PageNavItem,
-    emoji_provider: emoji.Provider,
-    theme: Theme,
-    home_slug: ?[]const u8,
     /// When true, output to `index.html` with prefix `.` instead of `page/{slug}.html`.
     is_home: bool,
-    repo_url: ?[]const u8,
 ) !void {
-    var buf = Buf.init(allocator, emoji_provider, theme);
-    defer buf.deinit();
-    buf.home_slug = home_slug;
-    buf.repo_url = repo_url;
+    const io = ctx.io;
+    const allocator = ctx.allocator;
 
-    const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, project_name });
+    var buf = Buf.init(allocator);
+    defer buf.deinit();
+
+    const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, ctx.project_name });
     defer allocator.free(title);
 
     const prefix: []const u8 = if (is_home)
@@ -2249,7 +2235,7 @@ fn renderZigPage(
     else
         "..";
 
-    try writeHeader(&buf, title, project_name, mods, pages, null, entry.slug, prefix);
+    try writeHeader(&buf, ctx, title, null, entry.slug, prefix);
     // Zig pages have no right-sidebar TOC; reclaim that margin.
     try buf.writeAll("<style>.page-body{margin-right:0}</style>\n");
 
@@ -2272,7 +2258,7 @@ fn renderZigPage(
             example_mod.freeSegments(allocator, segments);
             allocator.free(segments);
         }
-        try renderExampleSegments(&buf, allocator, segments, mods, prefix);
+        try renderExampleSegments(&buf, ctx, segments, prefix);
         try buf.writeAll("</div>\n");
     }
 
@@ -2315,7 +2301,7 @@ fn renderZigPage(
             \\
         );
     }
-    try writeFooter(&buf);
+    try writeFooter(&buf, ctx);
 
     const filename = if (is_home)
         try allocator.dupe(u8, "index.html")
