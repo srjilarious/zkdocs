@@ -3,3 +3,4 @@ zig-out/
 zig-pkg/
 docs-out/
 .zkdocs-cache
+test_tmp_*/

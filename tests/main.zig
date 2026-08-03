@@ -6,6 +6,8 @@ const symbols = zkdocs.symbols;
 const markdown = zkdocs.markdown;
 const render = zkdocs.render;
 const example = zkdocs.example;
+const emoji = zkdocs.emoji;
+const highlight = markdown.highlight;
 //* ---
 
 //* -- collapsed: Helper methods --
@@ -524,6 +526,270 @@ const ExampleTests = struct {
     }
 };
 
+//* These tests exercise `render.renderSite` end to end against a synthetic,
+//* two-levels-deep nested page tree (section containing a section containing
+//* a page entry). They guard against the class of bug fixed in the page
+//* rendering, search index, and home-entry lookup walks: a one-level-only
+//* walk over `PageNavItem` silently drops anything nested further down.
+const RenderSiteTests = struct {
+    /// Builds a `Section -> Section -> entry` tree. The leaf entry's
+    /// `src_path` points at a real repo file (`sample.zig`) so cache
+    /// recording has something real to stat.
+    fn buildNestedPages(deep_items: *[1]render.PageNavItem, inner_items: *[1]render.PageNavItem) [1]render.PageNavItem {
+        deep_items[0] = .{ .entry = .{
+            .slug = "deep",
+            .title = "Deep Page",
+            .content = "# Deep\n\nHello from deep.",
+            .src_path = "sample.zig",
+            .mode = .markdown,
+        } };
+        inner_items[0] = .{ .section = .{ .title = "Inner", .items = deep_items } };
+        return .{.{ .section = .{ .title = "Outer", .items = inner_items } }};
+    }
+
+    pub fn nestedPageIsRenderedToDisk() !void {
+        const gpa = std.heap.page_allocator;
+
+        var deep_items: [1]render.PageNavItem = undefined;
+        var inner_items: [1]render.PageNavItem = undefined;
+        var pages = buildNestedPages(&deep_items, &inner_items);
+
+        var progress = render.Progress.init(10);
+        var cache = render.cache_mod.Cache.init(g_Io, gpa);
+        defer cache.deinit();
+
+        const out_dir = "test_tmp_render_nested_disk";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, out_dir) catch {};
+
+        try render.renderSite(g_Io, gpa, .{
+            .out_path = out_dir,
+            .project_name = "Test",
+            .mods = &.{},
+            .pages = &pages,
+            .emoji_provider = .unicode,
+            .theme = .default,
+            .progress = &progress,
+            .conf_dir = null,
+            .home_slug = null,
+            .cache = &cache,
+            .conf_abs_path = null,
+            .show_imports = false,
+            .repo_url = null,
+        });
+
+        // The page nested two sections deep must actually be written to disk.
+        const page_path = try std.fmt.allocPrint(gpa, "{s}/page/deep.html", .{out_dir});
+        defer gpa.free(page_path);
+        const content = std.Io.Dir.cwd().readFileAlloc(g_Io, page_path, gpa, .limited(64 * 1024)) catch {
+            return error.DeepPageNotRendered;
+        };
+        defer gpa.free(content);
+        try testz.expectTrue(std.mem.indexOf(u8, content, "Hello from deep") != null);
+
+        // The search index must include it too.
+        const search_path = try std.fmt.allocPrint(gpa, "{s}/assets/search-data.js", .{out_dir});
+        defer gpa.free(search_path);
+        const search_data = try std.Io.Dir.cwd().readFileAlloc(g_Io, search_path, gpa, .limited(1024 * 1024));
+        defer gpa.free(search_data);
+        try testz.expectTrue(std.mem.indexOf(u8, search_data, "page/deep.html") != null);
+
+        // The cache must record the nested guide, so a later incremental
+        // rebuild doesn't silently skip re-rendering it.
+        try testz.expectTrue(cache.guides.contains("sample.zig"));
+    }
+
+    pub fn homeSlugIsFoundWhenNestedInSection() !void {
+        const gpa = std.heap.page_allocator;
+
+        var deep_items: [1]render.PageNavItem = undefined;
+        var inner_items: [1]render.PageNavItem = undefined;
+        var pages = buildNestedPages(&deep_items, &inner_items);
+
+        var progress = render.Progress.init(10);
+        var cache = render.cache_mod.Cache.init(g_Io, gpa);
+        defer cache.deinit();
+
+        const out_dir = "test_tmp_render_nested_home";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, out_dir) catch {};
+
+        try render.renderSite(g_Io, gpa, .{
+            .out_path = out_dir,
+            .project_name = "Test",
+            .mods = &.{},
+            .pages = &pages,
+            .emoji_provider = .unicode,
+            .theme = .default,
+            .progress = &progress,
+            .conf_dir = null,
+            // "deep" is nested two sections down; the home lookup must find
+            // it there instead of falling back to the default module listing.
+            .home_slug = "deep",
+            .cache = &cache,
+            .conf_abs_path = null,
+            .show_imports = false,
+            .repo_url = null,
+        });
+
+        const index_path = try std.fmt.allocPrint(gpa, "{s}/index.html", .{out_dir});
+        defer gpa.free(index_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(g_Io, index_path, gpa, .limited(64 * 1024));
+        defer gpa.free(content);
+        try testz.expectTrue(std.mem.indexOf(u8, content, "Hello from deep") != null);
+    }
+};
+
+//* These tests exercise the on-disk build cache directly: a save/load round
+//* trip must preserve recorded mtimes, and a cache written by a different
+//* zkdocs binary version must be treated as stale rather than silently
+//* served (the regression this guards: pages generated by an old binary
+//* kept the old footer/markup forever because only the cache schema
+//* version, not the zkdocs version, invalidated the cache).
+const CacheTests = struct {
+    pub fn saveLoadRoundTripPreservesSources() !void {
+        const gpa = std.heap.page_allocator;
+        const dir = "test_tmp_cache_roundtrip";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, dir) catch {};
+        try std.Io.Dir.cwd().createDirPath(g_Io, dir);
+
+        {
+            var cache = render.cache_mod.Cache.init(g_Io, gpa);
+            defer cache.deinit();
+            try cache.recordSource("sample.zig");
+            try cache.save(dir);
+        }
+
+        var loaded = render.cache_mod.Cache.load(g_Io, gpa, dir);
+        defer loaded.deinit();
+        try testz.expectTrue(loaded.sourceUnchanged("sample.zig"));
+    }
+
+    pub fn mismatchedAppVersionInvalidatesCache() !void {
+        const gpa = std.heap.page_allocator;
+        const dir = "test_tmp_cache_version";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, dir) catch {};
+        try std.Io.Dir.cwd().createDirPath(g_Io, dir);
+
+        {
+            var cache = render.cache_mod.Cache.init(g_Io, gpa);
+            defer cache.deinit();
+            try cache.recordSource("sample.zig");
+            try cache.save(dir);
+        }
+
+        // Corrupt the persisted app_ver so it can never match the running
+        // binary's version, simulating a cache left behind by an older build.
+        const cache_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dir, render.cache_mod.CACHE_FILENAME });
+        defer gpa.free(cache_path);
+        const raw = try std.Io.Dir.cwd().readFileAlloc(g_Io, cache_path, gpa, .limited(64 * 1024));
+        defer gpa.free(raw);
+        const patched = try std.mem.replaceOwned(u8, gpa, raw, "\"app_ver\":\"", "\"app_ver\":\"stale-binary-");
+        defer gpa.free(patched);
+        {
+            const f = try std.Io.Dir.cwd().createFile(g_Io, cache_path, .{});
+            defer f.close(g_Io);
+            try f.writeStreamingAll(g_Io, patched);
+        }
+
+        var loaded = render.cache_mod.Cache.load(g_Io, gpa, dir);
+        defer loaded.deinit();
+        // A version mismatch must fall back to an empty cache instead of
+        // reusing the previous (now stale) run's recorded mtimes.
+        try testz.expectFalse(loaded.sourceUnchanged("sample.zig"));
+    }
+};
+
+//* These tests cover `emoji.replaceInHtml`, which had no test coverage at
+//* all: shortcode lookup, the `none` provider passthrough, and the
+//* documented (but previously unverified) behavior that shortcodes inside
+//* `<code>`/`<pre>` are left untouched so code samples aren't mangled.
+const EmojiTests = struct {
+    pub fn unicodeProviderReplacesKnownShortcode() !void {
+        const gpa = std.heap.page_allocator;
+
+        const html = try emoji.replaceInHtml(gpa, "<p>Hello :smile: world</p>", .unicode);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, ":smile:") == null);
+        // U+1F604 (SMILE) UTF-8 encoded.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "\u{1F604}") != null);
+    }
+
+    pub fn noneProviderLeavesShortcodesUntouched() !void {
+        const gpa = std.heap.page_allocator;
+
+        const src = "<p>Hello :smile: world</p>";
+        const html = try emoji.replaceInHtml(gpa, src, .none);
+        defer gpa.free(html);
+
+        try testz.expectEqualStr(html, src);
+    }
+
+    pub fn shortcodeInsideCodeBlockIsNotReplaced() !void {
+        const gpa = std.heap.page_allocator;
+
+        const html = try emoji.replaceInHtml(gpa, "<pre><code>:smile:</code></pre>", .unicode);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, ":smile:") != null);
+    }
+
+    pub fn unknownShortcodeIsLeftAsIs() !void {
+        const gpa = std.heap.page_allocator;
+
+        const src = "<p>:not_a_real_emoji:</p>";
+        const html = try emoji.replaceInHtml(gpa, src, .unicode);
+        defer gpa.free(html);
+
+        try testz.expectEqualStr(html, src);
+    }
+};
+
+//* These tests cover `highlight.zig` (tree-sitter syntax highlighting), which
+//* had no test coverage at all: the tree-sitter Zig path, the JSON path, and
+//* the escaped-plain-text fallback for a language with no grammar.
+const HighlightTests = struct {
+    pub fn zigKeywordsAreWrappedInSpans() !void {
+        const gpa = std.heap.page_allocator;
+
+        const html = try highlight.highlightZig(gpa, "pub fn foo() void {}");
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "hl-keyword") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "foo") != null);
+    }
+
+    pub fn zigHighlightEscapesHtmlInStringLiterals() !void {
+        const gpa = std.heap.page_allocator;
+
+        const html = try highlight.highlightZig(gpa, "const s = \"<a>\";");
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "&lt;a&gt;") != null);
+        // The raw angle brackets must not survive un-escaped inside the span.
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<a>") == null);
+    }
+
+    pub fn unknownLanguageFallsBackToEscapedPlainText() !void {
+        const gpa = std.heap.page_allocator;
+
+        const html = try highlight.highlight(gpa, "python", "<script>alert(1)</script>");
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "&lt;script&gt;") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "hl-") == null);
+    }
+
+    pub fn jsonHighlightWrapsStringsAndNumbers() !void {
+        const gpa = std.heap.page_allocator;
+
+        const html = try highlight.highlight(gpa, "json", "{\"a\": 1}");
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "hl-string") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "hl-number") != null);
+    }
+};
+
 //* -- collapsed: Test discovery and runner --
 //* The `testz` framework uses a list of test groups and their associated modules to discover test functions to run. Each group has a name, a tag for filtering, and a reference to the module containing the tests. The `main` function then runs all discovered tests using the default `testzRunner` helper method, handling argument parsing, etc.
 const DiscoveredTests = testz.discoverTests(.{
@@ -534,6 +800,10 @@ const DiscoveredTests = testz.discoverTests(.{
     testz.Group{ .name = "Markdown Rendering", .tag = "markdown", .mod = MarkdownTests },
     testz.Group{ .name = "Render / Sym Links", .tag = "render", .mod = RenderTests },
     testz.Group{ .name = "Example Parsing", .tag = "example", .mod = ExampleTests },
+    testz.Group{ .name = "Site Rendering", .tag = "render_site", .mod = RenderSiteTests },
+    testz.Group{ .name = "Build Cache", .tag = "cache", .mod = CacheTests },
+    testz.Group{ .name = "Emoji Shortcodes", .tag = "emoji", .mod = EmojiTests },
+    testz.Group{ .name = "Syntax Highlighting", .tag = "highlight", .mod = HighlightTests },
 }, .{});
 
 pub fn main(init: std.process.Init) !void {
