@@ -367,6 +367,106 @@ const MarkdownTests = struct {
         try testz.expectTrue(std.mem.indexOf(u8, html, "<i>") == null);
         try testz.expectTrue(std.mem.indexOf(u8, html, "<em>") == null);
     }
+
+    /// A real GFM table outside any fence must render as an actual <table>.
+    pub fn realTableRendersAsTable() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\| Name | Type |
+            \\|------|------|
+            \\| foo  | i32  |
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<table") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<th>Name</th>") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<td>foo</td>") != null);
+    }
+
+    /// `[text](url)` inside a table cell must become a real `<a>`, and an
+    /// internal `sym:` link scheme must survive so `render.resolveInternalLinks`
+    /// (which runs over the whole page afterward) can rewrite it — table
+    /// cells previously only supported backtick code spans.
+    pub fn tableCellLinkBecomesAnchor() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\| Name | Docs |
+            \\|------|------|
+            \\| foo  | [Foo](sym:Foo) |
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<a href=\"sym:Foo\">Foo</a>") != null);
+
+        const resolved = try render.resolveInternalLinks(gpa, html, &.{}, "..");
+        defer gpa.free(resolved);
+        try testz.expectTrue(std.mem.indexOf(u8, resolved, "href=\"#sym-Foo") != null);
+    }
+
+    /// A fenced code block that merely *demonstrates* GFM table syntax must
+    /// stay literal text inside <pre><code> — not get extracted into a real
+    /// <table>, and not leave a stray ZKDOCSTABLE sentinel in the output.
+    pub fn tableSyntaxInsideFenceIsNotExtracted() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\Example table syntax:
+            \\
+            \\```
+            \\| Name | Type |
+            \\|------|------|
+            \\| foo  | i32  |
+            \\```
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<table") == null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "ZKDOCSTABLE") == null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "| Name | Type |") != null);
+    }
+
+    /// A real MkDocs-style admonition outside any fence must render as a
+    /// `.admonition` div.
+    pub fn realAdmonitionRendersAsDiv() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\!!! note "Heads up"
+            \\    Body text here.
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "class=\"admonition note\"") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "Heads up") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "Body text here.") != null);
+    }
+
+    /// A fenced code block that merely *demonstrates* admonition syntax must
+    /// stay literal text — not get extracted into a real `.admonition` div.
+    pub fn admonitionSyntaxInsideFenceIsNotExtracted() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\Example admonition syntax:
+            \\
+            \\```
+            \\!!! note "Heads up"
+            \\    Body text here.
+            \\```
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "class=\"admonition") == null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "ZKDOCSADMON") == null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "!!! note") != null);
+    }
 };
 
 //* This module checks that the `symbols` module correctly follows imports and extracts symbols from multiple modules, not just the root file. The `sample.zig` file imports a `math.zig` module, so we check that symbols from `math.zig` are also extracted and that their properties (like `pub`) are correct.
@@ -635,6 +735,68 @@ const RenderSiteTests = struct {
         const content = try std.Io.Dir.cwd().readFileAlloc(g_Io, index_path, gpa, .limited(64 * 1024));
         defer gpa.free(content);
         try testz.expectTrue(std.mem.indexOf(u8, content, "Hello from deep") != null);
+    }
+
+    /// The per-page "On this page" TOC scans raw markdown for `## ` lines.
+    /// A `## ` line inside a fenced code block (e.g. a snippet showing
+    /// someone else's markdown) must not be fence-blind and land in the TOC
+    /// alongside real headings.
+    pub fn tocSkipsHeadingSyntaxInsideFence() !void {
+        const gpa = std.heap.page_allocator;
+
+        var items: [1]render.PageNavItem = .{.{ .entry = .{
+            .slug = "toc-fence",
+            .title = "TOC Fence",
+            .content =
+            \\# Title
+            \\
+            \\## Real Heading
+            \\
+            \\```
+            \\## Fake Heading
+            \\```
+            \\
+            \\## Another Real Heading
+            ,
+            .src_path = "sample.zig",
+            .mode = .markdown,
+        } }};
+
+        var progress = render.Progress.init(10);
+        var cache = render.cache_mod.Cache.init(g_Io, gpa);
+        defer cache.deinit();
+
+        const out_dir = "test_tmp_render_toc_fence";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, out_dir) catch {};
+
+        try render.renderSite(g_Io, gpa, .{
+            .out_path = out_dir,
+            .project_name = "Test",
+            .mods = &.{},
+            .pages = &items,
+            .emoji_provider = .unicode,
+            .theme = .default,
+            .progress = &progress,
+            .conf_dir = null,
+            .home_slug = null,
+            .cache = &cache,
+            .conf_abs_path = null,
+            .show_imports = false,
+            .repo_url = null,
+        });
+
+        const page_path = try std.fmt.allocPrint(gpa, "{s}/page/toc-fence.html", .{out_dir});
+        defer gpa.free(page_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(g_Io, page_path, gpa, .limited(64 * 1024));
+        defer gpa.free(content);
+
+        const toc_start = std.mem.indexOf(u8, content, "page-toc") orelse return error.NoToc;
+        const toc_end = std.mem.indexOf(u8, content[toc_start..], "</aside>") orelse return error.NoTocEnd;
+        const toc = content[toc_start .. toc_start + toc_end];
+
+        try testz.expectTrue(std.mem.indexOf(u8, toc, "Real Heading") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, toc, "Another Real Heading") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, toc, "Fake Heading") == null);
     }
 };
 

@@ -70,6 +70,59 @@ pub fn slugify(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
     return slug.toOwnedSlice(allocator);
 }
 
+// ── Fence tracking (shared by fence-blind line scanners) ─────────────────────
+
+const FenceMarker = struct { ch: u8, len: usize };
+
+/// A fence delimiter line: up to 3 leading spaces, then 3+ of the same
+/// backtick/tilde character. For backtick fences, no further backtick may
+/// appear on the line (that would make it an inline code span, not a fence).
+fn fenceMarker(line: []const u8) ?FenceMarker {
+    var i: usize = 0;
+    while (i < line.len and i < 3 and line[i] == ' ') i += 1;
+    const rest = line[i..];
+    if (rest.len < 3) return null;
+    const ch = rest[0];
+    if (ch != '`' and ch != '~') return null;
+    var n: usize = 0;
+    while (n < rest.len and rest[n] == ch) n += 1;
+    if (n < 3) return null;
+    if (ch == '`' and std.mem.indexOfScalar(u8, rest[n..], '`') != null) return null;
+    return .{ .ch = ch, .len = n };
+}
+
+/// Tracks whether a line-by-line scan is currently inside a fenced code
+/// block (``` or ~~~, per CommonMark). Table, admonition, and heading-TOC
+/// scanners must skip fence-interior lines so a code sample that merely
+/// *demonstrates* the syntax they're looking for isn't misinterpreted as
+/// the real thing.
+pub const FenceTracker = struct {
+    active: bool = false,
+    fence_char: u8 = 0,
+    fence_len: usize = 0,
+
+    /// Update state for `line` and return whether `line` should be treated
+    /// as fence interior — this includes the fence delimiter lines
+    /// themselves, since those aren't real table/admonition/heading syntax
+    /// either.
+    pub fn observe(self: *FenceTracker, line: []const u8) bool {
+        if (fenceMarker(line)) |m| {
+            if (!self.active) {
+                self.active = true;
+                self.fence_char = m.ch;
+                self.fence_len = m.len;
+                return true;
+            }
+            if (m.ch == self.fence_char and m.len >= self.fence_len) {
+                self.active = false;
+                return true;
+            }
+            return true; // a shorter/different fence-looking line while active is still fence content
+        }
+        return self.active;
+    }
+};
+
 // ── Block extraction (tables + admonitions) ──────────────────────────────────
 
 // Sentinel prefixes embedded in the stripped markdown so we can find and swap
@@ -94,10 +147,19 @@ fn extractTables(
     defer lines.deinit(allocator);
     while (line_iter.next()) |ln| try lines.append(allocator, ln);
 
+    var fence = FenceTracker{};
     var i: usize = 0;
     while (i < lines.items.len) {
         const line = lines.items[i];
-        //const trimmed = std.mem.trim(u8, line, " \t");
+
+        // Inside a fenced code block, a `|`-prefixed line is a code sample
+        // demonstrating table syntax, not a real table — pass it through.
+        if (fence.observe(line)) {
+            try result.appendSlice(allocator, line);
+            try result.append(allocator, '\n');
+            i += 1;
+            continue;
+        }
 
         // Table starts when this line and the next both begin with `|`, and
         // the next line is a separator row.
@@ -165,7 +227,10 @@ fn isTableSeparator(line: []const u8) bool {
 }
 
 /// Append `<th>` or `<td>` elements for one row of a pipe-delimited table.
-/// Cells are HTML-escaped; backtick spans become `<code>`.
+/// Cells are HTML-escaped; backtick spans become `<code>`; `[text](url)`
+/// spans become `<a>` (including the `sym:`/`mod:`/`page:` internal-link
+/// schemes, since `render.resolveInternalLinks` runs over the whole page
+/// afterward and doesn't care whether the `<a>` came from a table cell).
 fn appendTableCells(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -205,6 +270,23 @@ fn appendInline(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []c
                 continue;
             }
         }
+        if (text[i] == '[') {
+            if (parseInlineLink(text[i..])) |link| {
+                try out.appendSlice(allocator, "<a href=\"");
+                for (link.url) |c| switch (c) {
+                    '"' => try out.appendSlice(allocator, "&quot;"),
+                    '<' => try out.appendSlice(allocator, "&lt;"),
+                    '>' => try out.appendSlice(allocator, "&gt;"),
+                    '&' => try out.appendSlice(allocator, "&amp;"),
+                    else => try out.append(allocator, c),
+                };
+                try out.appendSlice(allocator, "\">");
+                try appendInline(out, allocator, link.text);
+                try out.appendSlice(allocator, "</a>");
+                i += link.consumed;
+                continue;
+            }
+        }
         // HTML-escape single character.
         switch (text[i]) {
             '<' => try out.appendSlice(allocator, "&lt;"),
@@ -214,6 +296,22 @@ fn appendInline(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []c
         }
         i += 1;
     }
+}
+
+const InlineLink = struct { text: []const u8, url: []const u8, consumed: usize };
+
+/// Parse a `[text](url)` markdown link at the start of `s` (`s[0] == '['`).
+/// Returns null if `s` doesn't start with a well-formed link. Doesn't
+/// support nested brackets/parens in `text`/`url` — table cells don't need it.
+fn parseInlineLink(s: []const u8) ?InlineLink {
+    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
+    if (close_bracket + 1 >= s.len or s[close_bracket + 1] != '(') return null;
+    const close_paren = std.mem.indexOfScalarPos(u8, s, close_bracket + 2, ')') orelse return null;
+    return .{
+        .text = s[1..close_bracket],
+        .url = s[close_bracket + 2 .. close_paren],
+        .consumed = close_paren + 1,
+    };
 }
 
 fn htmlEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
@@ -281,9 +379,19 @@ fn extractAdmonitions(
     defer lines.deinit(allocator);
     while (line_iter.next()) |ln| try lines.append(allocator, ln);
 
+    var fence = FenceTracker{};
     var i: usize = 0;
     while (i < lines.items.len) {
         const line = lines.items[i];
+
+        // Inside a fenced code block, a `!!! `/`??? `-prefixed line is a code
+        // sample demonstrating admonition syntax, not a real one — pass it through.
+        if (fence.observe(line)) {
+            try result.appendSlice(allocator, line);
+            try result.append(allocator, '\n');
+            i += 1;
+            continue;
+        }
 
         const collapsible = std.mem.startsWith(u8, line, "??? ");
         const is_admon = std.mem.startsWith(u8, line, "!!! ") or collapsible;

@@ -401,8 +401,10 @@ pub fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
     // First pass: count H2 headings.
     var has_h2 = false;
     {
+        var fence = markdown.FenceTracker{};
         var lines = std.mem.splitScalar(u8, raw_content, '\n');
         while (lines.next()) |line| {
+            if (fence.observe(line)) continue;
             const t = std.mem.trim(u8, line, " \t\r");
             if (std.mem.startsWith(u8, t, "## ")) {
                 has_h2 = true;
@@ -414,8 +416,10 @@ pub fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
 
     try buf.writeAll("<aside class=\"page-toc\">\n<h4>On this page</h4>\n<ul class=\"toc-children\">\n");
 
+    var fence = markdown.FenceTracker{};
     var lines = std.mem.splitScalar(u8, raw_content, '\n');
     while (lines.next()) |line| {
+        if (fence.observe(line)) continue;
         const t = std.mem.trim(u8, line, " \t\r");
         if (!std.mem.startsWith(u8, t, "## ")) continue;
         const heading = std.mem.trim(u8, t[3..], " \t");
