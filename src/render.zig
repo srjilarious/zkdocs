@@ -83,6 +83,136 @@ pub const RenderSiteOptions = struct {
     repo_url: ?[]const u8,
 };
 
+/// `Io.Group.async` entry point for `renderModulePage`: renders one module's
+/// `api/<module>.html` on a pool thread, recording failure via `failed`
+/// instead of propagating the error (the group has no per-task error channel).
+fn renderModuleJob(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.Module, failed: *std.atomic.Value(bool)) void {
+    renderModulePage(ctx, out_dir, mod) catch |err| {
+        std.debug.print("  error rendering module '{s}': {}\n", .{ mod.name, err });
+        failed.store(true, .monotonic);
+    };
+}
+
+/// Render a single module's `api/<module>.html`. Reads only shared,
+/// already-built state off `ctx` (type index, cache, mods list) so it is
+/// safe to call concurrently for different modules.
+fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.Module) !void {
+    Progress.setCurrent(mod.name);
+    var buf = Buf.init(ctx.allocator);
+    defer buf.deinit();
+
+    const title = try std.fmt.allocPrint(ctx.allocator, "{s} — {s}", .{ mod.name, ctx.project_name });
+    defer ctx.allocator.free(title);
+
+    try page_render.writeHeader(&buf, ctx, title, mod.name, null, "..");
+
+    try buf.writeAll("<h1>");
+    try htmlEscape(&buf, mod.name);
+    try buf.writeAll("</h1>\n<div class=\"mod-path\">");
+    try htmlEscape(&buf, mod.path);
+    try buf.writeAll("</div>\n");
+    if (mod.doc) |doc| try page_render.writeDoc(&buf, ctx, mod.name, doc);
+
+    var has_types = false;
+    var has_errors = false;
+    var has_fns = false;
+    var has_consts = false;
+    var has_comptime_blocks = false;
+    for (mod.symbols.items) |sym| {
+        switch (sym) {
+            .container => |c| {
+                if (c.is_pub) has_types = true;
+            },
+            .function => |f| {
+                if (f.is_pub and f.generic_return != null) has_types = true;
+                if (f.is_pub and f.generic_return == null) has_fns = true;
+            },
+            .variable => |v| {
+                if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
+            },
+            .error_set => |e| {
+                if (e.is_pub) has_errors = true;
+            },
+            .comptime_block => has_comptime_blocks = true,
+            .@"test", .other => {},
+        }
+    }
+
+    if (has_types) {
+        try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
+        for (mod.symbols.items) |sym| {
+            if (sym == .container and sym.container.is_pub)
+                try page_render.renderContainer(&buf, ctx, mod.name, sym.container);
+        }
+        for (mod.symbols.items) |sym| {
+            if (sym != .function) continue;
+            const f = sym.function;
+            if (f.is_pub and f.generic_return != null) try page_render.renderFn(&buf, ctx, mod.name, f, null);
+        }
+    }
+    if (has_errors) {
+        try buf.writeAll("<h2 id=\"section-errors\">Errors</h2>\n");
+        for (mod.symbols.items) |sym| {
+            if (sym == .error_set and sym.error_set.is_pub)
+                try page_render.renderErrorSet(&buf, ctx, mod.name, sym.error_set);
+        }
+    }
+    if (has_fns) {
+        try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
+        for (mod.symbols.items) |sym| {
+            if (sym == .function) {
+                const f = sym.function;
+                if (f.is_pub and f.generic_return == null) try page_render.renderFn(&buf, ctx, mod.name, f, null);
+            }
+        }
+    }
+    if (has_consts) {
+        try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
+        for (mod.symbols.items) |sym| {
+            if (sym == .variable) {
+                const v = sym.variable;
+                if (v.is_pub and (ctx.show_imports or !v.is_import)) try page_render.renderVar(&buf, ctx, mod.name, v);
+            }
+        }
+    }
+    if (has_comptime_blocks) {
+        try buf.writeAll("<h2 id=\"section-comptime\">Comptime Blocks</h2>\n");
+        var cb_index: usize = 0;
+        for (mod.symbols.items) |sym| {
+            if (sym == .comptime_block) {
+                try page_render.renderComptimeBlock(&buf, ctx, mod.name, cb_index, sym.comptime_block);
+                cb_index += 1;
+            }
+        }
+    }
+
+    try page_render.writeApiToc(&buf, ctx, mod);
+    try page_render.writeFooter(&buf, ctx);
+
+    const filename = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html", .{mod.name});
+    defer ctx.allocator.free(filename);
+    const file = try out_dir.createFile(ctx.io, filename, .{});
+    defer file.close(ctx.io);
+    try buf.flush(ctx.io, file);
+}
+
+/// `Io.Group.async` entry point for rendering one `page/<slug>.html` guide or
+/// example page, mirroring `renderModuleJob`.
+fn renderPageJob(ctx: *const SiteContext, out_dir: *std.Io.Dir, entry: PageEntry, failed: *std.atomic.Value(bool)) void {
+    renderPageEntry(ctx, out_dir, entry) catch |err| {
+        std.debug.print("  error rendering page '{s}': {}\n", .{ entry.slug, err });
+        failed.store(true, .monotonic);
+    };
+}
+
+fn renderPageEntry(ctx: *const SiteContext, out_dir: *std.Io.Dir, entry: PageEntry) !void {
+    Progress.setCurrent(entry.slug);
+    switch (entry.mode) {
+        .markdown => try page_render.renderMarkdownPage(ctx, out_dir, entry, false),
+        .zig_prose, .zig_raw => try page_render.renderZigPage(ctx, out_dir, entry, false),
+    }
+}
+
 /// Generate the full HTML site under `opts.out_path`.
 ///
 /// Output layout:
@@ -260,108 +390,18 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
         ctx.progress.begin(label);
     }
     {
+        // Each module page is independent once symbols are extracted, so fan
+        // them out across the Io thread pool instead of rendering sequentially.
+        var failed = std.atomic.Value(bool).init(false);
+        var group: std.Io.Group = .init;
         for (ctx.mods) |mod| {
             // Skip this module if its source and the conf/assets are all unchanged.
             if (!conf_changed and !assets_changed and ctx.cache.sourceUnchanged(mod.abs_path))
                 continue;
-            Progress.setCurrent(mod.name);
-            var buf = Buf.init(allocator);
-            defer buf.deinit();
-
-            const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ mod.name, ctx.project_name });
-            defer allocator.free(title);
-
-            try page_render.writeHeader(&buf, &ctx, title, mod.name, null, "..");
-
-            try buf.writeAll("<h1>");
-            try htmlEscape(&buf, mod.name);
-            try buf.writeAll("</h1>\n<div class=\"mod-path\">");
-            try htmlEscape(&buf, mod.path);
-            try buf.writeAll("</div>\n");
-            if (mod.doc) |doc| try page_render.writeDoc(&buf, &ctx, mod.name, doc);
-
-            var has_types = false;
-            var has_errors = false;
-            var has_fns = false;
-            var has_consts = false;
-            var has_comptime_blocks = false;
-            for (mod.symbols.items) |sym| {
-                switch (sym) {
-                    .container => |c| {
-                        if (c.is_pub) has_types = true;
-                    },
-                    .function => |f| {
-                        if (f.is_pub and f.generic_return != null) has_types = true;
-                        if (f.is_pub and f.generic_return == null) has_fns = true;
-                    },
-                    .variable => |v| {
-                        if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
-                    },
-                    .error_set => |e| {
-                        if (e.is_pub) has_errors = true;
-                    },
-                    .comptime_block => has_comptime_blocks = true,
-                    .@"test", .other => {},
-                }
-            }
-
-            if (has_types) {
-                try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
-                for (mod.symbols.items) |sym| {
-                    if (sym == .container and sym.container.is_pub)
-                        try page_render.renderContainer(&buf, &ctx, mod.name, sym.container);
-                }
-                for (mod.symbols.items) |sym| {
-                    if (sym != .function) continue;
-                    const f = sym.function;
-                    if (f.is_pub and f.generic_return != null) try page_render.renderFn(&buf, &ctx, mod.name, f, null);
-                }
-            }
-            if (has_errors) {
-                try buf.writeAll("<h2 id=\"section-errors\">Errors</h2>\n");
-                for (mod.symbols.items) |sym| {
-                    if (sym == .error_set and sym.error_set.is_pub)
-                        try page_render.renderErrorSet(&buf, &ctx, mod.name, sym.error_set);
-                }
-            }
-            if (has_fns) {
-                try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
-                for (mod.symbols.items) |sym| {
-                    if (sym == .function) {
-                        const f = sym.function;
-                        if (f.is_pub and f.generic_return == null) try page_render.renderFn(&buf, &ctx, mod.name, f, null);
-                    }
-                }
-            }
-            if (has_consts) {
-                try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
-                for (mod.symbols.items) |sym| {
-                    if (sym == .variable) {
-                        const v = sym.variable;
-                        if (v.is_pub and (ctx.show_imports or !v.is_import)) try page_render.renderVar(&buf, &ctx, mod.name, v);
-                    }
-                }
-            }
-            if (has_comptime_blocks) {
-                try buf.writeAll("<h2 id=\"section-comptime\">Comptime Blocks</h2>\n");
-                var cb_index: usize = 0;
-                for (mod.symbols.items) |sym| {
-                    if (sym == .comptime_block) {
-                        try page_render.renderComptimeBlock(&buf, &ctx, mod.name, cb_index, sym.comptime_block);
-                        cb_index += 1;
-                    }
-                }
-            }
-
-            try page_render.writeApiToc(&buf, &ctx, mod);
-            try page_render.writeFooter(&buf, &ctx);
-
-            const filename = try std.fmt.allocPrint(allocator, "api/{s}.html", .{mod.name});
-            defer allocator.free(filename);
-            const file = try out_dir.createFile(io, filename, .{});
-            defer file.close(io);
-            try buf.flush(io, file);
+            group.async(io, renderModuleJob, .{ &ctx, &out_dir, mod, &failed });
         }
+        try group.await(io);
+        if (failed.load(.monotonic)) return error.RenderFailed;
         if (ctx.mods.len > 0) Progress.endFiles();
     }
 
@@ -382,15 +422,25 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
         }) catch "rendering pages";
         ctx.progress.begin(label);
 
+        // Pages are independent of each other too, so fan them out the same
+        // way as api/<module>.html pages above.
+        var page_failed = std.atomic.Value(bool).init(false);
+        var page_group: std.Io.Group = .init;
         const RenderPageCtx = struct {
             ctx: *const SiteContext,
             out_dir: *std.Io.Dir,
+            io: std.Io,
+            group: *std.Io.Group,
+            failed: *std.atomic.Value(bool),
             conf_changed: bool,
             assets_changed: bool,
         };
         try pages.visitPageEntries(ctx.pages, RenderPageCtx{
             .ctx = &ctx,
             .out_dir = &out_dir,
+            .io = io,
+            .group = &page_group,
+            .failed = &page_failed,
             .conf_changed = conf_changed,
             .assets_changed = assets_changed,
         }, struct {
@@ -399,13 +449,11 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                 // Skip if the page source, conf, and assets are all unchanged.
                 if (!rctx.conf_changed and !rctx.assets_changed and e.src_path.len > 0 and rctx.ctx.cache.guideUnchanged(e.src_path))
                     return;
-                Progress.setCurrent(e.slug);
-                switch (e.mode) {
-                    .markdown => try page_render.renderMarkdownPage(rctx.ctx, rctx.out_dir, e, false),
-                    .zig_prose, .zig_raw => try page_render.renderZigPage(rctx.ctx, rctx.out_dir, e, false),
-                }
+                rctx.group.async(rctx.io, renderPageJob, .{ rctx.ctx, rctx.out_dir, e, rctx.failed });
             }
         }.visit);
+        try page_group.await(io);
+        if (page_failed.load(.monotonic)) return error.RenderFailed;
         Progress.endFiles();
     }
 

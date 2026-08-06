@@ -200,10 +200,10 @@ When multiple versions of docs exist, search engines need a canonical.
 - When `zkdocs.conf` is malformed JSON, report the line/column of the parse error
 - When a source file listed in `sources` doesn't exist, suggest the nearest file by name
 
-### 9.4 Parallel Module Rendering
-- Modules are currently rendered sequentially
-- Each API page is independent once symbols are extracted; they can be rendered in parallel using `std.Thread.Pool`
-- Likely a noticeable speedup for projects with 20+ modules
+### 9.4 Parallel Module Rendering — done
+- Each `api/<module>.html` page is rendered independently on the `Io.Group` thread pool (`std.Thread.Pool` no longer exists in current Zig; `Io.Group.async` is its replacement) instead of sequentially
+- Guide/example `page/<slug>.html` pages get the same treatment, since they're just as independent of each other
+- See `renderModulePage`/`renderModuleJob` and `renderPageEntry`/`renderPageJob` in `src/render.zig`
 
 ---
 
