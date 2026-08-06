@@ -278,18 +278,18 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
     var has_fns = false;
     var has_consts = false;
     for (mod.symbols.items) |sym| {
-        switch (sym.kind) {
-            .container => if (sym.container) |c| {
+        switch (sym) {
+            .container => |c| {
                 if (c.is_pub) has_types = true;
             },
-            .function => if (sym.function) |f| {
+            .function => |f| {
                 if (f.is_pub and f.generic_return != null) has_types = true;
                 if (f.is_pub and f.generic_return == null) has_fns = true;
             },
-            .variable => if (sym.variable) |v| {
+            .variable => |v| {
                 if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
             },
-            else => {},
+            .@"test", .other => {},
         }
     }
     if (!has_types and !has_fns and !has_consts) return;
@@ -299,8 +299,8 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
     if (has_types) {
         try buf.writeAll("<li><a href=\"#section-types\">Types</a>\n<ul class=\"toc-children\">\n");
         for (mod.symbols.items) |sym| {
-            if (sym.kind != .container) continue;
-            const c = sym.container orelse continue;
+            if (sym != .container) continue;
+            const c = sym.container;
             if (!c.is_pub) continue;
 
             try buf.print("<li><a href=\"#sym-{s}\">", .{c.name});
@@ -310,18 +310,16 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
             // Indented public methods
             var has_methods = false;
             for (c.decls.items) |d| {
-                if (d.kind == .function) if (d.function) |mf| {
-                    if (mf.is_pub) {
-                        has_methods = true;
-                        break;
-                    }
-                };
+                if (d == .function and d.function.is_pub) {
+                    has_methods = true;
+                    break;
+                }
             }
             if (has_methods) {
                 try buf.writeAll("\n<ul class=\"toc-methods\">\n");
                 for (c.decls.items) |d| {
-                    if (d.kind != .function) continue;
-                    const mf = d.function orelse continue;
+                    if (d != .function) continue;
+                    const mf = d.function;
                     if (!mf.is_pub) continue;
                     try buf.print("<li><a href=\"#sym-{s}-{s}\">.{s}</a></li>\n", .{ c.name, mf.name, mf.name });
                 }
@@ -331,8 +329,8 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
         }
         // Generic type constructors
         for (mod.symbols.items) |sym| {
-            if (sym.kind != .function) continue;
-            const f = sym.function orelse continue;
+            if (sym != .function) continue;
+            const f = sym.function;
             if (!f.is_pub or f.generic_return == null) continue;
             const gr = f.generic_return.?;
 
@@ -342,18 +340,16 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
 
             var has_methods = false;
             for (gr.decls.items) |d| {
-                if (d.kind == .function) if (d.function) |mf| {
-                    if (mf.is_pub) {
-                        has_methods = true;
-                        break;
-                    }
-                };
+                if (d == .function and d.function.is_pub) {
+                    has_methods = true;
+                    break;
+                }
             }
             if (has_methods) {
                 try buf.writeAll("\n<ul class=\"toc-methods\">\n");
                 for (gr.decls.items) |d| {
-                    if (d.kind != .function) continue;
-                    const mf = d.function orelse continue;
+                    if (d != .function) continue;
+                    const mf = d.function;
                     if (!mf.is_pub) continue;
                     try buf.print("<li><a href=\"#sym-{s}-{s}\">.{s}</a></li>\n", .{ f.name, mf.name, mf.name });
                 }
@@ -367,8 +363,8 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
     if (has_fns) {
         try buf.writeAll("<li><a href=\"#section-functions\">Functions</a>\n<ul class=\"toc-children\">\n");
         for (mod.symbols.items) |sym| {
-            if (sym.kind != .function) continue;
-            const f = sym.function orelse continue;
+            if (sym != .function) continue;
+            const f = sym.function;
             if (!f.is_pub) continue;
             if (f.generic_return != null) continue;
             try buf.print("<li><a href=\"#sym-{s}\">", .{f.name});
@@ -381,8 +377,8 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
     if (has_consts) {
         try buf.writeAll("<li><a href=\"#section-constants\">Constants</a>\n<ul class=\"toc-children\">\n");
         for (mod.symbols.items) |sym| {
-            if (sym.kind != .variable) continue;
-            const v = sym.variable orelse continue;
+            if (sym != .variable) continue;
+            const v = sym.variable;
             if (!v.is_pub) continue;
             if (!ctx.show_imports and v.is_import) continue;
             try buf.print("<li><a href=\"#sym-{s}\">", .{v.name});
@@ -508,19 +504,15 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
 
         var has_pub_decls = false;
         for (gr.decls.items) |d| {
-            if (d.kind == .function) if (d.function) |mf| {
-                if (mf.is_pub) {
-                    has_pub_decls = true;
-                    break;
-                }
-            };
+            if (d == .function and d.function.is_pub) {
+                has_pub_decls = true;
+                break;
+            }
         }
         if (has_pub_decls) {
             try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
             for (gr.decls.items) |d| {
-                if (d.kind == .function) if (d.function) |mf| {
-                    if (mf.is_pub) try renderFn(buf, ctx, current_module, mf, f.name);
-                };
+                if (d == .function and d.function.is_pub) try renderFn(buf, ctx, current_module, d.function, f.name);
             }
             try buf.writeAll("</div>\n");
         }
@@ -560,19 +552,15 @@ pub fn renderContainer(buf: *Buf, ctx: *const SiteContext, current_module: []con
 
     var has_pub_decls = false;
     for (c.decls.items) |d| {
-        if (d.kind == .function) if (d.function) |f| {
-            if (f.is_pub) {
-                has_pub_decls = true;
-                break;
-            }
-        };
+        if (d == .function and d.function.is_pub) {
+            has_pub_decls = true;
+            break;
+        }
     }
     if (has_pub_decls) {
         try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Methods</h4>\n");
         for (c.decls.items) |d| {
-            if (d.kind == .function) if (d.function) |f| {
-                if (f.is_pub) try renderFn(buf, ctx, current_module, f, c.name);
-            };
+            if (d == .function and d.function.is_pub) try renderFn(buf, ctx, current_module, d.function, c.name);
         }
         try buf.writeAll("</div>\n");
     }

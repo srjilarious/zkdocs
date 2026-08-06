@@ -20,12 +20,12 @@ fn findModule(mods: []const symbols.Module, name: []const u8) ?symbols.Module {
 
 fn findSymbol(syms: []const symbols.Symbol, kind: symbols.SymbolKind, name: []const u8) ?symbols.Symbol {
     for (syms) |sym| {
-        if (sym.kind != kind) continue;
-        const sym_name = switch (kind) {
-            .function => if (sym.function) |f| f.name else continue,
-            .variable => if (sym.variable) |v| v.name else continue,
-            .container => if (sym.container) |c| c.name else continue,
-            else => continue,
+        if (@as(symbols.SymbolKind, sym) != kind) continue;
+        const sym_name = switch (sym) {
+            .function => |f| f.name,
+            .variable => |v| v.name,
+            .container => |c| c.name,
+            .@"test", .other => continue,
         };
         if (std.mem.eql(u8, sym_name, name)) return sym;
     }
@@ -49,7 +49,7 @@ const FunctionTests = struct {
         const sym = findSymbol(sample.symbols.items, .function, "add") orelse {
             return error.SymbolNotFound;
         };
-        const f = sym.function.?;
+        const f = sym.function;
         try testz.expectTrue(f.is_pub);
         try testz.expectEqual(f.params.len, 2);
         try testz.expectEqualStr(f.params[0].name.?, "a");
@@ -66,7 +66,7 @@ const FunctionTests = struct {
         const sym = findSymbol(sample.symbols.items, .function, "privateHelper") orelse {
             return error.SymbolNotFound;
         };
-        try testz.expectTrue(!sym.function.?.is_pub);
+        try testz.expectTrue(!sym.function.is_pub);
     }
 };
 
@@ -85,7 +85,7 @@ const DocTests = struct {
         const sym = findSymbol(sample.symbols.items, .function, "sub") orelse {
             return error.SymbolNotFound;
         };
-        const doc = sym.function.?.doc orelse return error.NoDoc;
+        const doc = sym.function.doc orelse return error.NoDoc;
         try testz.expectEqualStr(doc, "Subtracts `b` from `a`.");
     }
 
@@ -99,7 +99,7 @@ const DocTests = struct {
         const sym = findSymbol(sample.symbols.items, .function, "add") orelse {
             return error.SymbolNotFound;
         };
-        const doc = sym.function.?.doc orelse return error.NoDoc;
+        const doc = sym.function.doc orelse return error.NoDoc;
         try testz.expectTrue(std.mem.startsWith(u8, doc, "Adds two integers"));
         try testz.expectTrue(std.mem.indexOf(u8, doc, "Returns the sum") != null);
     }
@@ -114,7 +114,7 @@ const DocTests = struct {
         const sym = findSymbol(sample.symbols.items, .function, "privateHelper") orelse {
             return error.SymbolNotFound;
         };
-        try testz.expectTrue(sym.function.?.doc == null);
+        try testz.expectTrue(sym.function.doc == null);
     }
 };
 
@@ -130,7 +130,7 @@ const ContainerTests = struct {
         const sym = findSymbol(sample.symbols.items, .container, "Point") orelse {
             return error.SymbolNotFound;
         };
-        const c = sym.container.?;
+        const c = sym.container;
         try testz.expectTrue(c.is_pub);
         try testz.expectEqual(@intFromEnum(c.kind), @intFromEnum(symbols.ContainerKind.@"struct"));
         try testz.expectEqual(c.fields.len, 2);
@@ -148,17 +148,16 @@ const ContainerTests = struct {
         const sym = findSymbol(sample.symbols.items, .container, "Point") orelse {
             return error.SymbolNotFound;
         };
-        const c = sym.container.?;
+        const c = sym.container;
         try testz.expectTrue(c.decls.items.len >= 2);
         // zero() and translate() should be present
         var found_zero = false;
         var found_translate = false;
         for (c.decls.items) |decl| {
-            if (decl.kind == .function) {
-                if (decl.function) |f| {
-                    if (std.mem.eql(u8, f.name, "zero")) found_zero = true;
-                    if (std.mem.eql(u8, f.name, "translate")) found_translate = true;
-                }
+            if (decl == .function) {
+                const f = decl.function;
+                if (std.mem.eql(u8, f.name, "zero")) found_zero = true;
+                if (std.mem.eql(u8, f.name, "translate")) found_translate = true;
             }
         }
         try testz.expectTrue(found_zero);
@@ -175,7 +174,7 @@ const ContainerTests = struct {
         const sym = findSymbol(sample.symbols.items, .container, "Color") orelse {
             return error.SymbolNotFound;
         };
-        const c = sym.container.?;
+        const c = sym.container;
         try testz.expectEqual(@intFromEnum(c.kind), @intFromEnum(symbols.ContainerKind.@"enum"));
         try testz.expectEqual(c.fields.len, 3);
         try testz.expectEqualStr(c.fields[0].name, "red");
@@ -204,7 +203,7 @@ const ImportTests = struct {
                 const mul = findSymbol(mod.symbols.items, .function, "multiply") orelse {
                     return error.SymbolNotFound;
                 };
-                try testz.expectTrue(mul.function.?.is_pub);
+                try testz.expectTrue(mul.function.is_pub);
             }
         }
         try testz.expectTrue(found_math);
@@ -221,7 +220,7 @@ const ImportTests = struct {
             const sym = findSymbol(mod.symbols.items, .container, "Vec2") orelse {
                 return error.SymbolNotFound;
             };
-            const c = sym.container.?;
+            const c = sym.container;
             try testz.expectEqual(c.fields.len, 2);
             return;
         }
@@ -334,7 +333,7 @@ const MarkdownTests = struct {
         const sample = findModule(mods, "sample") orelse return error.SampleModuleNotFound;
         const sym = findSymbol(sample.symbols.items, .container, "SequentialFenceExample") orelse
             return error.SymbolNotFound;
-        const doc = sym.container.?.doc orelse return error.NoDoc;
+        const doc = sym.container.doc orelse return error.NoDoc;
 
         // The extracted doc must contain two separate fences on their own lines.
         const first_fence = std.mem.indexOf(u8, doc, "```") orelse return error.NoFence;

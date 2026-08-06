@@ -37,20 +37,20 @@ pub fn buildTypeIndex(allocator: std.mem.Allocator, mods: []const symbols.Module
     var idx = TypeIndex.init(allocator);
     for (mods) |mod| {
         for (mod.symbols.items) |sym| {
-            switch (sym.kind) {
-                .container => if (sym.container) |c| {
+            switch (sym) {
+                .container => |c| {
                     if (c.is_pub) try idx.put(c.name, .{
                         .module_name = mod.name,
                         .anchor_name = c.name,
                     });
                 },
-                .function => if (sym.function) |f| {
+                .function => |f| {
                     if (f.is_pub and f.generic_return != null) try idx.put(f.name, .{
                         .module_name = mod.name,
                         .anchor_name = f.name,
                     });
                 },
-                else => {},
+                .variable, .@"test", .other => {},
             }
         }
     }

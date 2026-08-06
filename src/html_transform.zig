@@ -145,6 +145,17 @@ const SymbolRef = struct {
     name: []const u8,
 };
 
+/// Returns the symbol's name if it's a public function/variable/container,
+/// null otherwise (private, or a `test`/`other` symbol with no linkable name).
+fn pubSymbolName(sym: symbols.Symbol) ?[]const u8 {
+    return switch (sym) {
+        .function => |f| if (f.is_pub) f.name else null,
+        .variable => |v| if (v.is_pub) v.name else null,
+        .container => |c| if (c.is_pub) c.name else null,
+        .@"test", .other => null,
+    };
+}
+
 fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
     if (std.mem.indexOfScalar(u8, target, '.')) |dot| {
         const lhs = target[0..dot];
@@ -155,13 +166,7 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
             if (std.mem.eql(u8, mod.name, lhs)) {
                 // module.Symbol — look up the symbol within this module only.
                 for (mod.symbols.items) |sym| {
-                    const sym_name: ?[]const u8 = switch (sym.kind) {
-                        .function => if (sym.function) |f| (if (f.is_pub) f.name else null) else null,
-                        .variable => if (sym.variable) |v| (if (v.is_pub) v.name else null) else null,
-                        .container => if (sym.container) |c| (if (c.is_pub) c.name else null) else null,
-                        else => null,
-                    };
-                    if (sym_name) |n| {
+                    if (pubSymbolName(sym)) |n| {
                         if (std.mem.eql(u8, n, rhs))
                             return .{ .module_name = mod.name, .name = n };
                     }
@@ -173,11 +178,10 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
         // lhs is not a module → treat as Container.method.
         for (mods) |mod| {
             for (mod.symbols.items) |sym| {
-                if (sym.kind == .container) {
-                    if (sym.container) |c| {
-                        if (c.is_pub and std.mem.eql(u8, c.name, lhs)) {
-                            return .{ .module_name = mod.name, .container = c.name, .name = rhs };
-                        }
+                if (sym == .container) {
+                    const c = sym.container;
+                    if (c.is_pub and std.mem.eql(u8, c.name, lhs)) {
+                        return .{ .module_name = mod.name, .container = c.name, .name = rhs };
                     }
                 }
             }
@@ -188,13 +192,7 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
     // Plain symbol name — match across all modules.
     for (mods) |mod| {
         for (mod.symbols.items) |sym| {
-            const sym_name: ?[]const u8 = switch (sym.kind) {
-                .function => if (sym.function) |f| (if (f.is_pub) f.name else null) else null,
-                .variable => if (sym.variable) |v| (if (v.is_pub) v.name else null) else null,
-                .container => if (sym.container) |c| (if (c.is_pub) c.name else null) else null,
-                else => null,
-            };
-            if (sym_name) |n| {
+            if (pubSymbolName(sym)) |n| {
                 if (std.mem.eql(u8, n, target))
                     return .{ .module_name = mod.name, .name = n };
             }

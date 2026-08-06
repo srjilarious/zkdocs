@@ -206,11 +206,11 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                     // Prefer the file-level //! doc; fall back to first symbol doc, then path.
                     const blurb: ?[]const u8 = mod.doc orelse blk2: {
                         for (mod.symbols.items) |sym| {
-                            const d: ?[]const u8 = switch (sym.kind) {
-                                .function => if (sym.function) |f| f.doc else null,
-                                .variable => if (sym.variable) |v| v.doc else null,
-                                .container => if (sym.container) |c| c.doc else null,
-                                else => null,
+                            const d: ?[]const u8 = switch (sym) {
+                                .function => |f| f.doc,
+                                .variable => |v| v.doc,
+                                .container => |c| c.doc,
+                                .@"test", .other => null,
                             };
                             if (d != null) break :blk2 d;
                         }
@@ -283,48 +283,49 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
             var has_fns = false;
             var has_consts = false;
             for (mod.symbols.items) |sym| {
-                switch (sym.kind) {
-                    .container => if (sym.container) |c| {
+                switch (sym) {
+                    .container => |c| {
                         if (c.is_pub) has_types = true;
                     },
-                    .function => if (sym.function) |f| {
+                    .function => |f| {
                         if (f.is_pub and f.generic_return != null) has_types = true;
                         if (f.is_pub and f.generic_return == null) has_fns = true;
                     },
-                    .variable => if (sym.variable) |v| {
+                    .variable => |v| {
                         if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
                     },
-                    else => {},
+                    .@"test", .other => {},
                 }
             }
 
             if (has_types) {
                 try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
                 for (mod.symbols.items) |sym| {
-                    if (sym.kind == .container) if (sym.container) |c| {
-                        if (c.is_pub) try page_render.renderContainer(&buf, &ctx, mod.name, c);
-                    };
+                    if (sym == .container and sym.container.is_pub)
+                        try page_render.renderContainer(&buf, &ctx, mod.name, sym.container);
                 }
                 for (mod.symbols.items) |sym| {
-                    if (sym.kind != .function) continue;
-                    const f = sym.function orelse continue;
+                    if (sym != .function) continue;
+                    const f = sym.function;
                     if (f.is_pub and f.generic_return != null) try page_render.renderFn(&buf, &ctx, mod.name, f, null);
                 }
             }
             if (has_fns) {
                 try buf.writeAll("<h2 id=\"section-functions\">Functions</h2>\n");
                 for (mod.symbols.items) |sym| {
-                    if (sym.kind == .function) if (sym.function) |f| {
+                    if (sym == .function) {
+                        const f = sym.function;
                         if (f.is_pub and f.generic_return == null) try page_render.renderFn(&buf, &ctx, mod.name, f, null);
-                    };
+                    }
                 }
             }
             if (has_consts) {
                 try buf.writeAll("<h2 id=\"section-constants\">Constants</h2>\n");
                 for (mod.symbols.items) |sym| {
-                    if (sym.kind == .variable) if (sym.variable) |v| {
+                    if (sym == .variable) {
+                        const v = sym.variable;
                         if (v.is_pub and (ctx.show_imports or !v.is_import)) try page_render.renderVar(&buf, &ctx, mod.name, v);
-                    };
+                    }
                 }
             }
 

@@ -59,11 +59,12 @@ pub const Variable = struct {
     is_import: bool,
 };
 
-pub const Symbol = struct {
-    kind: SymbolKind,
-    function: ?Function = null,
-    variable: ?Variable = null,
-    container: ?Container = null,
+pub const Symbol = union(SymbolKind) {
+    function: Function,
+    variable: Variable,
+    container: Container,
+    @"test": void,
+    other: void,
 };
 
 pub const Module = struct {
@@ -368,8 +369,8 @@ fn deinitContainer(allocator: std.mem.Allocator, c: *Container) void {
 }
 
 fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
-    switch (sym.kind) {
-        .function => if (sym.function) |*f| {
+    switch (sym.*) {
+        .function => |*f| {
             allocator.free(f.name);
             for (f.params) |p| {
                 if (p.name) |n| allocator.free(n);
@@ -381,14 +382,14 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
             if (f.body_src) |s| allocator.free(s);
             if (f.generic_return) |*c| deinitContainer(allocator, c);
         },
-        .variable => if (sym.variable) |*v| {
+        .variable => |*v| {
             allocator.free(v.name);
             if (v.type_src) |s| allocator.free(s);
             if (v.value_src) |s| allocator.free(s);
             if (v.doc) |s| allocator.free(s);
         },
-        .container => if (sym.container) |*c| deinitContainer(allocator, c),
-        else => {},
+        .container => |*c| deinitContainer(allocator, c),
+        .@"test", .other => {},
     }
 }
 
@@ -482,7 +483,6 @@ fn extractFnSymbol(
     }
 
     return .{
-        .kind = .function,
         .function = .{
             .name = name,
             .params = try params_list.toOwnedSlice(allocator),
@@ -629,7 +629,6 @@ fn extractContainerSymbol(
                     null;
                 errdefer if (nested_value_src) |s| allocator.free(s);
                 try decls_list.append(allocator, .{
-                    .kind = .variable,
                     .variable = .{
                         .name = nested_name,
                         .type_src = type_src,
@@ -645,7 +644,6 @@ fn extractContainerSymbol(
     }
 
     return .{
-        .kind = .container,
         .container = .{
             .name = name,
             .kind = kind,
@@ -800,7 +798,6 @@ pub fn extractModule(
                     null;
                 errdefer if (value_src) |s| allocator.free(s);
                 try module.symbols.append(allocator, .{
-                    .kind = .variable,
                     .variable = .{
                         .name = name,
                         .type_src = type_src,

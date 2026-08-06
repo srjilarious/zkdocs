@@ -94,8 +94,8 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
     // API symbols
     for (ctx.mods) |mod| {
         for (mod.symbols.items) |sym| {
-            switch (sym.kind) {
-                .function => if (sym.function) |f| {
+            switch (sym) {
+                .function => |f| {
                     if (f.is_pub) {
                         const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, f.name });
                         defer ctx.allocator.free(url);
@@ -104,7 +104,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                         id += 1;
                     }
                 },
-                .container => if (sym.container) |c| {
+                .container => |c| {
                     if (c.is_pub) {
                         const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, c.name });
                         defer ctx.allocator.free(url);
@@ -113,7 +113,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                         id += 1;
                     }
                 },
-                .variable => if (sym.variable) |v| {
+                .variable => |v| {
                     if (v.is_pub) {
                         const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, v.name });
                         defer ctx.allocator.free(url);
@@ -122,7 +122,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                         id += 1;
                     }
                 },
-                else => {},
+                .@"test", .other => {},
             }
         }
     }

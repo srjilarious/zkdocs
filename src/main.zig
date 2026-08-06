@@ -198,8 +198,8 @@ fn printSymbols(syms: []const symbols.Symbol, depth: usize) void {
     @memset(pfx, ' ');
 
     for (syms) |sym| {
-        switch (sym.kind) {
-            .function => if (sym.function) |f| {
+        switch (sym) {
+            .function => |f| {
                 if (f.doc) |d| printDoc(pfx, "", d);
                 std.debug.print("{s}fn {s}(", .{ pfx, f.name });
                 for (f.params, 0..) |p, i| {
@@ -212,14 +212,14 @@ fn printSymbols(syms: []const symbols.Symbol, depth: usize) void {
                 if (f.is_pub) std.debug.print("  [pub]", .{});
                 std.debug.print("\n", .{});
             },
-            .variable => if (sym.variable) |v| {
+            .variable => |v| {
                 if (v.doc) |d| printDoc(pfx, "", d);
                 std.debug.print("{s}const {s}", .{ pfx, v.name });
                 if (v.type_src) |t| std.debug.print(": {s}", .{t});
                 if (v.is_pub) std.debug.print("  [pub]", .{});
                 std.debug.print("\n", .{});
             },
-            .container => if (sym.container) |c| {
+            .container => |c| {
                 if (c.doc) |d| printDoc(pfx, "", d);
                 std.debug.print("{s}{s} {s}", .{ pfx, @tagName(c.kind), c.name });
                 if (c.is_pub) std.debug.print("  [pub]", .{});
@@ -235,7 +235,7 @@ fn printSymbols(syms: []const symbols.Symbol, depth: usize) void {
                     printSymbols(c.decls.items, depth + 1);
                 }
             },
-            else => {},
+            .@"test", .other => {},
         }
     }
 }
