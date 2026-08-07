@@ -34,6 +34,7 @@ pub const ElementType = enum {
     none,
     eof,
     container,
+    table,
 };
 
 pub const Element = struct {
@@ -83,6 +84,11 @@ pub const Linebreak = Element{ .type = .linebreak };
 pub const Root = Element{ .type = .root, .close = .eof };
 pub const Text = Element{ .type = .text, .close = .none };
 pub const Paragraph = Element{ .type = .paragraph, .close = .linebreak };
+/// A whole GFM table (header row + separator row + body rows), matched as a
+/// single atomic token spanning the entire block — see `Ast.matchTableEnd`.
+/// Unlike most elements, tables have no fixed close delimiter, so they're
+/// detected by custom lookahead rather than the generic `elements` table.
+pub const Table = Element{ .type = .table, .clear = true };
 
 pub const Token = struct {
     element: Element,

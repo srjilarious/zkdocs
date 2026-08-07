@@ -22,6 +22,7 @@ ordered_list: Handler = Default.ordered_list,
 list_item: Handler = Default.list_item,
 code: Handler = Default.code,
 paragraph: Handler = Default.paragraph,
+table: Handler = Default.table,
 default: Handler = Default.default,
 
 const Default = struct {
@@ -158,6 +159,14 @@ const Default = struct {
     pub fn paragraph(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<p>{s}</p>
+            \\
+        , .{node.content});
+    }
+
+    pub fn table(allocator: Allocator, node: Node) ![]const u8 {
+        return allocPrint(allocator,
+            \\<table>
+            \\{s}</table>
             \\
         , .{node.content});
     }

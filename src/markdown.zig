@@ -4,7 +4,9 @@ pub const highlight = @import("./highlight.zig");
 
 /// Render `markdown` to an HTML fragment (no DOCTYPE/html/body wrapper).
 pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror![]const u8 {
-    // Extract admonitions first (before tables, since bodies are rendered recursively).
+    // Extract admonitions first, since bodies are rendered recursively.
+    // Tables are handled natively by zmd (see zmd/Ast.zig's parseTable), so
+    // unlike admonitions they need no separate extract/restore pass here.
     var admonitions: std.ArrayList([]const u8) = .empty;
     defer {
         for (admonitions.items) |a| allocator.free(a);
@@ -13,28 +15,16 @@ pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror!
     const stripped_admon = try extractAdmonitions(allocator, markdown_text, &admonitions);
     defer allocator.free(stripped_admon);
 
-    // Extract GFM tables before zmd sees them; zmd would wrap them in <p> tags.
-    var tables: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (tables.items) |t| allocator.free(t);
-        tables.deinit(allocator);
-    }
-
-    const stripped = try extractTables(allocator, stripped_admon, &tables);
-    defer allocator.free(stripped);
-
-    const html = try zmd.parse(allocator, stripped, .{
+    const html = try zmd.parse(allocator, stripped_admon, .{
         .root = rootFmt,
         .code = codeFmt,
         .block = blockFmt,
         .h2 = h2Fmt,
+        .table = tableFmt,
     });
     defer allocator.free(html);
 
-    const with_tables = try restoreBlocks(allocator, html, tables.items, table_sentinel_prefix);
-    defer allocator.free(with_tables);
-
-    return restoreBlocks(allocator, with_tables, admonitions.items, admonition_sentinel_prefix);
+    return restoreBlocks(allocator, html, admonitions.items, admonition_sentinel_prefix);
 }
 
 /// Produce a URL-safe slug from a heading string.
@@ -123,196 +113,14 @@ pub const FenceTracker = struct {
     }
 };
 
-// ── Block extraction (tables + admonitions) ──────────────────────────────────
+// ── Block extraction (admonitions) ────────────────────────────────────────────
+// GFM tables are handled natively by zmd (see zmd/Ast.zig's parseTable) and
+// no longer need an extract/restore pass here. Admonitions still do, since
+// zmd has no concept of them.
 
-// Sentinel prefixes embedded in the stripped markdown so we can find and swap
+// Sentinel prefix embedded in the stripped markdown so we can find and swap
 // back later. Chosen to be unlikely in normal doc text.
-const table_sentinel_prefix = "ZKDOCSTABLE";
 const admonition_sentinel_prefix = "ZKDOCSADMON";
-
-/// Scan `md` for GFM table blocks (lines starting with `|` where the second
-/// line is a separator `|---|---|`). Each table block is replaced by a unique
-/// sentinel string, and its rendered HTML is appended to `out_tables`.
-fn extractTables(
-    allocator: std.mem.Allocator,
-    md: []const u8,
-    out_tables: *std.ArrayList([]const u8),
-) ![]const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    // Collect lines; keep track of raw slices into `md`.
-    var line_iter = std.mem.splitScalar(u8, md, '\n');
-    var lines: std.ArrayList([]const u8) = .empty;
-    defer lines.deinit(allocator);
-    while (line_iter.next()) |ln| try lines.append(allocator, ln);
-
-    var fence = FenceTracker{};
-    var i: usize = 0;
-    while (i < lines.items.len) {
-        const line = lines.items[i];
-
-        // Inside a fenced code block, a `|`-prefixed line is a code sample
-        // demonstrating table syntax, not a real table — pass it through.
-        if (fence.observe(line)) {
-            try result.appendSlice(allocator, line);
-            try result.append(allocator, '\n');
-            i += 1;
-            continue;
-        }
-
-        // Table starts when this line and the next both begin with `|`, and
-        // the next line is a separator row.
-        if (line.len > 0 and line[0] == '|' and
-            i + 1 < lines.items.len)
-        {
-            const next = std.mem.trim(u8, lines.items[i + 1], " \t");
-            if (next.len > 0 and next[0] == '|' and isTableSeparator(next)) {
-                // Collect all consecutive `|`-starting lines after the separator.
-                var end = i + 2;
-                while (end < lines.items.len) {
-                    const row = std.mem.trim(u8, lines.items[end], " \t");
-                    if (row.len == 0 or row[0] != '|') break;
-                    end += 1;
-                }
-
-                // Render the table block to HTML.
-                var tbl: std.ArrayList(u8) = .empty;
-                errdefer tbl.deinit(allocator);
-                try tbl.appendSlice(allocator, "<table class=\"fields-table\">\n<thead>\n<tr>");
-                try appendTableCells(&tbl, allocator, line, true);
-                try tbl.appendSlice(allocator, "</tr>\n</thead>\n<tbody>\n");
-                var r = i + 2;
-                while (r < end) : (r += 1) {
-                    try tbl.appendSlice(allocator, "<tr>");
-                    try appendTableCells(&tbl, allocator, lines.items[r], false);
-                    try tbl.appendSlice(allocator, "</tr>\n");
-                }
-                try tbl.appendSlice(allocator, "</tbody>\n</table>");
-
-                const idx = out_tables.items.len;
-                try out_tables.append(allocator, try tbl.toOwnedSlice(allocator));
-
-                // Emit sentinel (blank lines around it so zmd treats it as its
-                // own paragraph, making it easy to strip the wrapping <p>).
-                {
-                const _s = try std.fmt.allocPrint(allocator, "\n\n{s}{d}\n\n", .{ table_sentinel_prefix, idx });
-                defer allocator.free(_s);
-                try result.appendSlice(allocator, _s);
-                }
-                i = end;
-                continue;
-            }
-        }
-
-        try result.appendSlice(allocator, line);
-        try result.append(allocator, '\n');
-        i += 1;
-    }
-
-    return result.toOwnedSlice(allocator);
-}
-
-/// Returns true when `line` is a GFM table separator (`|---|:---:|` etc.).
-fn isTableSeparator(line: []const u8) bool {
-    var has_dash = false;
-    for (line) |c| {
-        switch (c) {
-            '|', '-', ':', ' ', '\t' => {},
-            else => return false,
-        }
-        if (c == '-') has_dash = true;
-    }
-    return has_dash;
-}
-
-/// Append `<th>` or `<td>` elements for one row of a pipe-delimited table.
-/// Cells are HTML-escaped; backtick spans become `<code>`; `[text](url)`
-/// spans become `<a>` (including the `sym:`/`mod:`/`page:` internal-link
-/// schemes, since `render.resolveInternalLinks` runs over the whole page
-/// afterward and doesn't care whether the `<a>` came from a table cell).
-fn appendTableCells(
-    out: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    line: []const u8,
-    header: bool,
-) !void {
-    const tag = if (header) "th" else "td";
-    var parts = std.mem.splitScalar(u8, line, '|');
-    _ = parts.next(); // discard empty before leading `|`
-    while (parts.next()) |raw| {
-        // peek: if there's nothing after this split, it's the trailing empty
-        const cell = std.mem.trim(u8, raw, " \t");
-        // The last split after the trailing `|` is always empty — skip it.
-        // We detect it by peeking: if rest of string is empty/whitespace.
-        if (cell.len == 0 and parts.peek() == null) break;
-
-        const open_tag = try std.fmt.allocPrint(allocator, "<{s}>", .{tag});
-        defer allocator.free(open_tag);
-        try out.appendSlice(allocator, open_tag);
-        try appendInline(out, allocator, cell);
-        const close_tag = try std.fmt.allocPrint(allocator, "</{s}>", .{tag});
-        defer allocator.free(close_tag);
-        try out.appendSlice(allocator, close_tag);
-    }
-}
-
-/// Minimal inline renderer: handles `` `code` `` spans and HTML-escapes the rest.
-fn appendInline(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
-    var i: usize = 0;
-    while (i < text.len) {
-        if (text[i] == '`') {
-            if (std.mem.indexOfScalar(u8, text[i + 1 ..], '`')) |end| {
-                try out.appendSlice(allocator, "<code>");
-                try htmlEscapeInto(out, allocator, text[i + 1 .. i + 1 + end]);
-                try out.appendSlice(allocator, "</code>");
-                i += 1 + end + 1;
-                continue;
-            }
-        }
-        if (text[i] == '[') {
-            if (parseInlineLink(text[i..])) |link| {
-                try out.appendSlice(allocator, "<a href=\"");
-                for (link.url) |c| switch (c) {
-                    '"' => try out.appendSlice(allocator, "&quot;"),
-                    '<' => try out.appendSlice(allocator, "&lt;"),
-                    '>' => try out.appendSlice(allocator, "&gt;"),
-                    '&' => try out.appendSlice(allocator, "&amp;"),
-                    else => try out.append(allocator, c),
-                };
-                try out.appendSlice(allocator, "\">");
-                try appendInline(out, allocator, link.text);
-                try out.appendSlice(allocator, "</a>");
-                i += link.consumed;
-                continue;
-            }
-        }
-        // HTML-escape single character.
-        switch (text[i]) {
-            '<' => try out.appendSlice(allocator, "&lt;"),
-            '>' => try out.appendSlice(allocator, "&gt;"),
-            '&' => try out.appendSlice(allocator, "&amp;"),
-            else => try out.append(allocator, text[i]),
-        }
-        i += 1;
-    }
-}
-
-const InlineLink = struct { text: []const u8, url: []const u8, consumed: usize };
-
-/// Parse a `[text](url)` markdown link at the start of `s` (`s[0] == '['`).
-/// Returns null if `s` doesn't start with a well-formed link. Doesn't
-/// support nested brackets/parens in `text`/`url` — table cells don't need it.
-fn parseInlineLink(s: []const u8) ?InlineLink {
-    const close_bracket = std.mem.indexOfScalar(u8, s, ']') orelse return null;
-    if (close_bracket + 1 >= s.len or s[close_bracket + 1] != '(') return null;
-    const close_paren = std.mem.indexOfScalarPos(u8, s, close_bracket + 2, ')') orelse return null;
-    return .{
-        .text = s[1..close_bracket],
-        .url = s[close_bracket + 2 .. close_paren],
-        .consumed = close_paren + 1,
-    };
-}
 
 fn htmlEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     for (s) |c| switch (c) {
@@ -578,5 +386,16 @@ fn h2Fmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
         allocator,
         "<h2 id=\"h2-{s}\">{s}</h2>\n",
         .{ slug, node.content },
+    );
+}
+
+// GFM tables get the same `fields-table` class used for symbol field tables
+// so they share styling; zmd's default `table` formatter emits a plain,
+// unclassed `<table>` since it has no notion of zkdocs-specific CSS.
+fn tableFmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "<table class=\"fields-table\">\n{s}</table>\n",
+        .{node.content},
     );
 }

@@ -406,6 +406,42 @@ const MarkdownTests = struct {
         try testz.expectTrue(std.mem.indexOf(u8, resolved, "href=\"#sym-Foo") != null);
     }
 
+    /// A code span inside a table cell must be HTML-escaped, same as a code
+    /// span anywhere else — zmd's own default `code` formatter doesn't
+    /// escape (it assumes a caller override handles that, as zkdocs's
+    /// top-level `codeFmt` does), so table cells need their own override.
+    pub fn tableCellCodeSpanIsEscaped() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\| Flag | Description |
+            \\|------|------|
+            \\| `--root <path>` | root source file |
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<code>--root &lt;path&gt;</code>") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<path>") == null);
+    }
+
+    /// Table cells now go through zmd's real inline parser (not the old
+    /// minimal hand-rolled renderer), so bold/italic work inside cells too.
+    pub fn tableCellSupportsBoldAndItalic() !void {
+        const gpa = std.heap.page_allocator;
+
+        const md =
+            \\| Name | Note |
+            \\|------|------|
+            \\| foo  | **important** and _also this_ |
+        ;
+        const html = try markdown.toHtml(gpa, md);
+        defer gpa.free(html);
+
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<b>important</b>") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, html, "<i>also this</i>") != null);
+    }
+
     /// A fenced code block that merely *demonstrates* GFM table syntax must
     /// stay literal text inside <pre><code> — not get extracted into a real
     /// <table>, and not leave a stray ZKDOCSTABLE sentinel in the output.

@@ -51,7 +51,7 @@ pub fn toHtml(
                 );
             }
         },
-        .code, .block => {
+        .code, .block, .table => {
             try allocating.writer.writeAll(self.content);
         },
         else => {},

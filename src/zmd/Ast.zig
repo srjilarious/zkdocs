@@ -1,6 +1,7 @@
 const std = @import("std");
 const Node = @import("Node.zig");
 const tokens = @import("tokens.zig");
+const Formatters = @import("Formatters.zig");
 const Writer = std.Io.Writer;
 const Allocator = std.mem.Allocator;
 const Ast = @This();
@@ -254,7 +255,53 @@ fn firstToken(self: *Ast, previous_token: ?Token, index: usize) ?Token {
             };
     }
 
+    // GFM tables: a `|`-prefixed header row immediately followed by a valid
+    // `|---|---|`-style separator row. Matched as a single token spanning
+    // the whole block (through the last consecutive `|`-prefixed row).
+    if (index_clear and self.input[index] == '|') {
+        if (self.matchTableEnd(index)) |end|
+            return .{ .element = tokens.Table, .start = index, .end = end };
+    }
+
     return null;
+}
+
+/// If a valid GFM table starts at `index`, returns the end offset of the
+/// whole table block. Returns null otherwise (not a `|`-prefixed row, or
+/// not immediately followed by a valid separator row).
+fn matchTableEnd(self: *Ast, index: usize) ?usize {
+    const header_end = std.mem.indexOfScalarPos(u8, self.input, index, '\n') orelse self.input.len;
+    if (header_end >= self.input.len) return null; // no room for a separator row
+
+    const sep_start = header_end + 1;
+    const sep_end = std.mem.indexOfScalarPos(u8, self.input, sep_start, '\n') orelse self.input.len;
+    const sep_line = std.mem.trim(u8, self.input[sep_start..sep_end], " \t");
+    if (sep_line.len == 0 or sep_line[0] != '|' or !isTableSeparatorLine(sep_line)) return null;
+
+    // Consume consecutive `|`-prefixed rows after the separator.
+    var cursor = sep_end;
+    while (cursor < self.input.len) {
+        const line_start = cursor + 1;
+        if (line_start >= self.input.len) break;
+        const line_end = std.mem.indexOfScalarPos(u8, self.input, line_start, '\n') orelse self.input.len;
+        const line = std.mem.trim(u8, self.input[line_start..line_end], " \t");
+        if (line.len == 0 or line[0] != '|') break;
+        cursor = line_end;
+    }
+    return cursor;
+}
+
+/// True when `line` is a GFM table separator row (`|---|:---:|` etc.).
+fn isTableSeparatorLine(line: []const u8) bool {
+    var has_dash = false;
+    for (line) |c| {
+        switch (c) {
+            '|', '-', ':', ' ', '\t' => {},
+            else => return false,
+        }
+        if (c == '-') has_dash = true;
+    }
+    return has_dash;
 }
 
 // Verify that a token immediately proceeds another token if `.after` property
@@ -307,6 +354,7 @@ fn parseChildNodes(
             .link_title => self.parseLink(child_node, index, .link),
             .image_title => self.parseLink(child_node, index, .image),
             .block, .code => self.parseBlock(child_node, index),
+            .table => try self.parseTable(allocator, child_node),
             .unordered_list_item => try self.parseList(
                 allocator,
                 node,
@@ -588,6 +636,106 @@ fn parseBlock(self: *Ast, node: *Node, index: usize) void {
             node.content = stripBlock(content[linebreak_index..]);
         }
     } else node.content = stripBlock(content);
+}
+
+/// Parse a GFM table token (already spanning header + separator + all body
+/// rows) into rendered `<thead>`/`<tbody>` HTML, stored directly on
+/// `node.content` — mirrors how `parseBlock` stores raw code content.
+/// Cell text is itself parsed for inline markdown (code spans, links,
+/// bold/italic) via a nested `Ast`, so tables get full inline support for free.
+fn parseTable(self: *Ast, allocator: Allocator, node: *Node) !void {
+    const raw = self.input[node.token.start..node.token.end];
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    const header_line = lines.next() orelse return;
+    _ = lines.next(); // separator row — shape already validated by matchTableEnd
+
+    var html: std.ArrayList(u8) = .empty;
+    errdefer html.deinit(allocator);
+
+    try html.appendSlice(allocator, "<thead>\n<tr>");
+    try appendTableRow(allocator, &html, header_line, true);
+    try html.appendSlice(allocator, "</tr>\n</thead>\n<tbody>\n");
+
+    while (lines.next()) |row_line| {
+        const trimmed = std.mem.trim(u8, row_line, " \t");
+        if (trimmed.len == 0) continue;
+        try html.appendSlice(allocator, "<tr>");
+        try appendTableRow(allocator, &html, trimmed, false);
+        try html.appendSlice(allocator, "</tr>\n");
+    }
+    try html.appendSlice(allocator, "</tbody>\n");
+
+    node.content = try html.toOwnedSlice(allocator);
+}
+
+/// Append `<th>`/`<td>` elements for one pipe-delimited table row.
+fn appendTableRow(allocator: Allocator, out: *std.ArrayList(u8), line: []const u8, header: bool) !void {
+    const tag = if (header) "th" else "td";
+    var parts = std.mem.splitScalar(u8, line, '|');
+    _ = parts.next(); // discard the empty segment before the leading `|`
+    while (parts.next()) |raw_cell| {
+        const cell = std.mem.trim(u8, raw_cell, " \t");
+        if (cell.len == 0 and parts.peek() == null) break; // trailing empty after the final `|`
+
+        try out.appendSlice(allocator, "<");
+        try out.appendSlice(allocator, tag);
+        try out.append(allocator, '>');
+        try appendCellHtml(allocator, out, cell);
+        try out.appendSlice(allocator, "</");
+        try out.appendSlice(allocator, tag);
+        try out.append(allocator, '>');
+    }
+}
+
+/// Render one table cell's markdown as inline HTML (no `<p>` wrapper) by
+/// running it through a nested `Ast`/`Node.toHtml` pass.
+fn appendCellHtml(allocator: Allocator, out: *std.ArrayList(u8), cell: []const u8) !void {
+    const normalized = try std.mem.concat(allocator, u8, &.{ cell, "\n" });
+
+    var cell_ast = try Ast.init(allocator, normalized);
+    defer cell_ast.deinit(allocator);
+    const root = try cell_ast.parse(allocator);
+
+    var aw: Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    // toHtml's inferred error set includes Writer.Error{WriteFailed}, but an
+    // Allocating writer can only ever fail with the allocator's OutOfMemory.
+    root.toHtml(allocator, normalized, &aw.writer, 0, table_cell_formatters) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => |e| return e,
+    };
+
+    try out.appendSlice(allocator, try aw.toOwnedSlice());
+}
+
+const table_cell_formatters: Formatters = .{
+    .root = identityContent,
+    .paragraph = identityContent,
+    .code = escapedCode,
+};
+
+/// Returns `node.content` unchanged — used to suppress the default
+/// full-document `<html>` wrapper (`root`) and paragraph `<p>` wrapper
+/// (`paragraph`) when rendering inline-only content like a table cell.
+fn identityContent(allocator: Allocator, node: Node) ![]const u8 {
+    return allocator.dupe(u8, node.content);
+}
+
+/// `Formatters.Default.code` writes `node.content` unescaped (it assumes a
+/// caller-supplied override handles escaping, as zkdocs's own top-level
+/// `codeFmt` does). Table cells render with defaults for everything else, so
+/// this fills that gap for code spans specifically — without it, a code span
+/// like `` `<path>` `` inside a cell would emit a raw, browser-swallowed `<path>`.
+fn escapedCode(allocator: Allocator, node: Node) ![]const u8 {
+    var escaped: std.ArrayList(u8) = .empty;
+    errdefer escaped.deinit(allocator);
+    for (node.content) |c| switch (c) {
+        '<' => try escaped.appendSlice(allocator, "&lt;"),
+        '>' => try escaped.appendSlice(allocator, "&gt;"),
+        '&' => try escaped.appendSlice(allocator, "&amp;"),
+        else => try escaped.append(allocator, c),
+    };
+    return std.fmt.allocPrint(allocator, "<code>{s}</code>", .{try escaped.toOwnedSlice(allocator)});
 }
 
 /// Parse a list into a single node with list item children, of which each list item has a text
