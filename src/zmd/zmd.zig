@@ -1,3 +1,7 @@
+//! Vendored, modified fork of zmd (https://github.com/jetzig-framework/zmd),
+//! MIT licensed. See README.md in this directory for what's been changed
+//! and why.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
