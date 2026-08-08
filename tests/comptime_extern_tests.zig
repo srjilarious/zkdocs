@@ -270,6 +270,12 @@ pub fn renderedApiPageShowsExternExportCallconvAndLayoutBadges() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     const page_path = try std.fmt.allocPrint(gpa, "{s}/api/sample.html", .{out_dir});

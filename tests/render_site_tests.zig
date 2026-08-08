@@ -53,6 +53,12 @@ pub fn nestedPageIsRenderedToDisk() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     // The page nested two sections deep must actually be written to disk.
@@ -106,6 +112,12 @@ pub fn homeSlugIsFoundWhenNestedInSection() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     const index_path = try std.fmt.allocPrint(gpa, "{s}/index.html", .{out_dir});
@@ -161,6 +173,12 @@ pub fn tocSkipsHeadingSyntaxInsideFence() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     const page_path = try std.fmt.allocPrint(gpa, "{s}/page/toc-fence.html", .{out_dir});
@@ -210,6 +228,12 @@ pub fn docCommentSymLinkIsResolved() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     const page_path = try std.fmt.allocPrint(gpa, "{s}/api/doc_links.html", .{out_dir});
@@ -259,6 +283,12 @@ pub fn examplePageProseSupportsEmoji() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     const page_path = try std.fmt.allocPrint(gpa, "{s}/page/emoji-example.html", .{out_dir});
@@ -326,6 +356,12 @@ pub fn combinedImageAndLinkRewriteBothResolve() !void {
         .conf_abs_path = null,
         .show_imports = false,
         .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
     });
 
     const page_path = try std.fmt.allocPrint(gpa, "{s}/page/combined.html", .{out_dir});

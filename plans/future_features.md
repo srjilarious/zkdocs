@@ -9,52 +9,63 @@ grouped by theme, roughly ordered from most to least impactful.
 
 The biggest gap for a doc generator is how completely it mirrors the actual language.
 
-### 1.1 Error Set Documentation
-Zig error sets are a first-class type, but they're not extracted or rendered today.
-- Extract `error{Foo, Bar}` declarations from `error_set_decl` AST nodes
-- Document named error sets at the container level
-- Link error types in function return signatures (`!T`) to their error set definitions
-- Show which errors a function can return when the set is inlined in the return type
+### 1.1 Error Set Documentation — done
+- `error{Foo, Bar}` declarations are extracted (`ErrorSet`/`ErrorVal` in `symbols.zig`) and rendered
+  in a dedicated "Errors" section per module (`renderErrorSet` in `page_render.zig`)
+- Inline `error{...}!T` return types are captured on the function itself (`Function.inline_errors`)
+  and rendered as an "Errors" table under the function
+- Named error sets participate in the cross-module type index, so `!MyError` in a signature links
+  to the error set's definition
 
-### 1.2 `comptime` Parameters and Blocks
-Many Zig APIs are heavily comptime-parameterized.
-- Annotate function parameters declared as `comptime T: type` or `comptime value: T`
-- Extract and render doc comments from `comptime {}` blocks when they appear at container scope
-- Detect and label "comptime-only" functions (functions that only make sense at compile time)
+### 1.2 `comptime` Parameters and Blocks — done
+- `comptime T: type` / `comptime value: T` parameters are flagged (`Param.is_comptime`) and rendered
+  with a `comptime ` keyword prefix
+- `comptime {}` blocks at container/module scope are extracted (`ComptimeBlock`) with their doc
+  comment and rendered as a collapsible source block (`renderComptimeBlock`)
+- Functions whose every parameter is comptime-qualified are labelled with a "comptime" pill
+  (`Function.is_comptime_only`)
 
-### 1.3 `extern` / C Interop Declarations
-Zig is often used for C interop; those declarations need documentation too.
-- Detect `extern fn` and `export fn` and render them with a distinct visual badge
-- Show calling conventions (`callconv(.C)`, `callconv(.Stdcall)`) in signatures
-- Document `extern struct` and `packed struct` distinctly from regular structs
+### 1.3 `extern` / C Interop Declarations — done
+- `extern fn` / `export fn` render with `extern`/`export` badges and pills (`Function.is_extern`,
+  `.is_export`, `.extern_lib_name`)
+- `callconv(...)` is captured and shown in the signature (`Function.callconv_src`)
+- `extern struct` / `packed struct` render their layout keyword distinctly from a plain struct
+  (`Container.layout`)
 
-### 1.4 Tagged Union Payloads
-Unions with enum tags have richer semantics than structs.
-- Render the tag type prominently on union documentation pages
-- Show each field with its payload type in a table (similar to enum field listing)
-- Link the tag enum if it is a named type defined elsewhere
+### 1.4 Tagged Union Payloads — partially done
+Union fields already appear in the standard fields table (`renderContainer`), same as struct fields,
+so field/payload-type listing works today. Still open:
+- Render the tag type prominently (rather than folded into the generic fields table)
+- Link the tag enum specifically when it's a named type defined elsewhere
 
 ### 1.5 `test` Block Listing
-`test "description" { ... }` blocks are a form of documentation.
-- Optionally extract test names and their doc comments
-- Display them as a collapsible "Tests" section at the bottom of API pages
-- Helps users understand expected behavior without reading the test file separately
+`test "description" { ... }` blocks are already extracted into `Symbol.@"test"` during parsing, but
+every renderer explicitly skips that variant (`.@"test", .other => {}` in `render.zig`,
+`page_render.zig`, `symbols.zig`) — nothing is ever displayed. Still open:
+- Render the extracted test blocks as a collapsible "Tests" section at the bottom of API pages
 
 ---
 
 ## 2. Developer Experience
 
 ### 2.1 Watch Mode
-Iterating on documentation requires regenerating after every change.
+Iterating on documentation requires regenerating after every change. Not implemented as a CLI flag —
+`src/file_watcher.zig` (`inotify` on Linux, no-op stub elsewhere) only powers in-process hot-reload of
+individual asset files (textures/atlases/fonts, per the pixzig-style resource loader pattern) during a
+single run; there is no `--watch` loop that re-invokes extraction/rendering.
 - Add `--watch` flag that uses `inotify` (Linux) / `kqueue` (macOS) to detect changes
 - Re-run extraction and rendering only for changed modules (incremental)
 - Optionally serve the output directory over HTTP so the browser auto-reloads
 
-### 2.2 Incremental Builds
-Even without watch mode, large projects benefit from not regenerating everything.
-- Cache a content hash per source file; skip re-extraction when the file is unchanged
-- Write a `.zkdocs-cache` file alongside the output directory
-- Invalidate cache entries when imported files change (walk the import graph)
+### 2.2 Incremental Builds — mostly done
+`.zkdocs-cache` (`src/cache.zig`) already tracks an mtime (not content hash) per source/guide/asset
+file plus the conf file, and `render.zig` skips re-rendering any `api/<module>.html` or `page/<slug>.html`
+whose source, the conf, and all assets are unchanged. Since each imported module already gets its own
+tracked `Module.abs_path` entry, most of the "invalidate when an import changes" need is covered
+without an explicit import-graph walk. Still open:
+- Switch from mtime to a content hash, if mtime-based staleness proves unreliable in practice
+- `index.html`'s module-listing content depends on every module's blurb, but isn't invalidated by an
+  unrelated module's doc-comment-only edit today (it's covered whenever conf/sources otherwise change)
 
 ### 2.3 Lint / Validation Mode
 - Add `--check` (or `--lint`) flag that exits non-zero when public symbols lack doc comments
@@ -100,39 +111,52 @@ Common in MkDocs; guides especially benefit.
 - Render `← Previous` and `Next →` links at the bottom of each guide and API page
 - Order follows the sidebar order defined in the guides config
 
-### 4.3 Stable Anchor IDs
-Symbol anchors currently use `#sym-FunctionName`.
-- Consider a more stable scheme when names conflict across modules: `#sym-moduleName-FunctionName`
-- Add a `--base-url` flag so generated sites work correctly under a sub-path (e.g. GitHub Pages `/project/`)
+### 4.3 Stable Anchor IDs — `--base-url` done; anchor scheme judged unnecessary
+- `--base-url` (or conf `"base_url"`) now overrides every nav/asset/link prefix with a fixed absolute
+  path (`site_context.prefixFor`, wired through `writeHeader`/`writeFooter`/page renderers), so a site
+  deployed under e.g. `/project/` links correctly regardless of on-disk nesting depth
+- The `#sym-moduleName-FunctionName` anchor scheme was not implemented: each module already renders to
+  its own `api/<module>.html` page, and Zig disallows duplicate top-level declaration names within a
+  single file, so `#sym-Name` collisions within one page cannot actually occur today. The real
+  cross-module ambiguity is in `buildTypeIndex` (`site_context.zig`), which silently lets a
+  same-named public symbol in a later-processed module overwrite an earlier module's entry for
+  automatic `writeTypeSrc` linking — a `sym:module.Name`-style qualification already exists for
+  explicit markdown links (`html_transform.zig`), but the automatic in-signature linker has no
+  equivalent disambiguation. Worth a follow-up if projects with cross-module name collisions report bad links.
 
-### 4.4 Print Stylesheet
-- Add a `@media print` CSS section that hides the sidebar and search, uses black-on-white, and expands all collapsed sections
-- Useful for generating PDFs or printable reference sheets
+### 4.4 Print Stylesheet — done
+- `@media print` in `style.css` hides the sidebar/search/mobile-bar/collapse-toggle-row, forces
+  black-on-white
+- `initPrintExpand` in `search.js` force-opens every collapsed `<details>` on `beforeprint` and
+  restores prior state on `afterprint`, so nothing collapsed is silently omitted from a printed page
 
-### 4.5 Collapsible Symbol Sections
-Large API pages with many symbols become hard to skim.
-- Add collapse/expand triangles to each function or type card
-- Persist collapsed state to `localStorage` so it survives page reloads
-- Provide a global "Collapse all / Expand all" toggle
+### 4.5 Collapsible Symbol Sections — done
+- Each symbol card is now a native `<details class="symbol">` (`renderFn`/`renderContainer`/
+  `renderVar`/`renderErrorSet`/`renderComptimeBlock` in `page_render.zig`) with the signature in
+  `<summary>`
+- `initSymbolCollapse` in `search.js` persists collapsed IDs to `localStorage` per page (keyed by
+  `location.pathname`) and restores them on load
+- A "Collapse all / Expand all" button pair (`.collapse-toggle-row`) is rendered above the symbol
+  list on every API module page (`render.zig`)
 
 ---
 
 ## 5. Customization & Theming
 
-### 5.1 User CSS Injection
-The theme enum approach is closed; advanced users need an escape hatch.
-- Add `"extra_css": ["path/to/custom.css"]` to `zkdocs.conf`
-- Inject a `<link rel="stylesheet">` tag after the built-in stylesheet
-- Lets users override any CSS variable or rule without forking zkdocs
+### 5.1 User CSS Injection — done
+- `"extra_css": ["path/to/custom.css"]` in `zkdocs.conf`, resolved relative to the conf file
+- Each file is copied into `assets/` (`html_transform.copyAssetFile`) and linked via
+  `<link rel="stylesheet">` after the built-in stylesheet, so later rules win
 
-### 5.2 Custom Header / Footer HTML
-- Add `"header_html"` and `"footer_html"` string fields in `zkdocs.conf`
-- Injected verbatim; useful for analytics tags, organization logos, or legal footers
+### 5.2 Custom Header / Footer HTML — done
+- `"header_html"` and `"footer_html"` string fields in `zkdocs.conf`, injected verbatim
+  (`SiteContext.header_html`/`.footer_html`) — right after the skip-link at the top of `<body>`,
+  and inside `<footer>` below the generated project/version line
 
-### 5.3 Logo / Favicon Support
-- Add `"logo": "path/to/logo.png"` to `zkdocs.conf`
-- Copy the file to `assets/logo.png` and display it in the sidebar header above the project name
-- Add `"favicon"` similarly for `<link rel="icon">`
+### 5.3 Logo / Favicon Support — done
+- `"logo"` in `zkdocs.conf`: copied into `assets/`, shown above the project name in the sidebar
+  header (`.site-logo`)
+- `"favicon"` similarly, emitted as `<link rel="icon">`
 
 ### 5.4 Syntax Highlighting for More Languages
 The current highlighter handles Zig and JSON.
@@ -159,6 +183,8 @@ When multiple versions of docs exist, search engines need a canonical.
 ## 7. CI / Deployment Helpers
 
 ### 7.1 GitHub Actions Workflow Template
+This repo has its own hand-written `.github/workflows/docs.yml` for self-hosting, but there is no
+`zkdocs init` sub-command that scaffolds one for other projects — still open:
 - Add a `zkdocs init` sub-command that scaffolds a `.github/workflows/docs.yml`
 - The workflow builds docs on every push to main and deploys to GitHub Pages
 - Lowers the adoption barrier to near zero
@@ -172,17 +198,26 @@ When multiple versions of docs exist, search engines need a canonical.
 
 ## 8. Accessibility
 
-### 8.1 Skip-to-Content Link
-- Add a visually hidden `<a href="#main-content">Skip to main content</a>` as the very first element
-- Becomes visible on focus for keyboard and screen-reader users
+### 8.1 Skip-to-Content Link — done
+- `.skip-link` is the first element inside `<body>`, visually hidden until keyboard focus
+  (`writeHeader` in `page_render.zig`), targeting `<main id="main-content">`
 
-### 8.2 ARIA Roles on Sidebar and Navigation
-- Add `role="navigation"` and `aria-label="Sidebar"` to the sidebar `<nav>`
-- Add `aria-expanded` to collapsible section toggles and update it via JavaScript
+### 8.2 ARIA Roles on Sidebar and Navigation — done
+- `role="navigation" aria-label="Sidebar"` on `<nav class="sidebar">`, `role="search"` on the search
+  box
+- The mobile nav/TOC toggle buttons (the only JS-driven, non-native disclosure widgets in the chrome)
+  get `aria-expanded`, updated by `initMobileNav` in `search.js`. The `<details>`-based nav sections
+  and symbol cards don't need manual `aria-expanded` — native disclosure semantics cover those.
 
-### 8.3 Sufficient Color Contrast
-- Audit the four themes against WCAG 2.1 AA (4.5:1 for normal text, 3:1 for large)
-- The `default` and `monokai` dark themes likely pass; `vscode_light` should be verified
+### 8.3 Sufficient Color Contrast — audited, fixed
+Computed WCAG 2.1 AA contrast ratios (4.5:1 normal text) for all four themes against their actual
+backgrounds (including composited code-block backgrounds). Two real failures found and fixed in
+`style.css`:
+- `monokai --muted` (`#857e68`, 4.41:1 on `--bg`) → `#928a72` (5.19:1)
+- `vscode-light --muted` (`#717171`, 4.40:1 on `--bg-sidebar`) → `#656565` (5.25:1)
+- `vscode-light --type`/`--num` (3.88:1 / 3.90:1 against the code-block background used by
+  syntax-highlighted `<pre>` blocks) → `#227289` / `#08784f` (4.63:1 / 4.67:1)
+- `default` and `vscode-dark` already passed everywhere checked
 
 ---
 
@@ -192,9 +227,8 @@ When multiple versions of docs exist, search engines need a canonical.
 - Allow renaming `index.html` to something else (some static hosts use `default.html`)
 - Not critical, but costs little to add
 
-### 9.2 `--version` Flag
-- Print `zkdocs 0.x.y` and exit
-- The version string is already in `build.zig.zon`; just thread it through to the binary
+### 9.2 `--version` Flag — done
+- `-v`/`--version` prints `zkdocs <version>` from `build_options.version` and exits (`main.zig`)
 
 ### 9.3 Better Error Messages
 - When `zkdocs.conf` is malformed JSON, report the line/column of the parse error
@@ -211,18 +245,19 @@ When multiple versions of docs exist, search engines need a canonical.
 
 Static HTML isn't always the fastest way to check "what does this function take again?" while heads-down in a terminal. zkdocs already has the hard part (symbol extraction, doc-comment markdown) — a terminal renderer is mostly a new `Formatters`-style backend, not a new pipeline.
 
-### 10.1 `zkdocs show <symbol>` / `--dump` Command
-- Reuse `symbols.extractModuleGraph` as-is; add a terminal-formatting backend as an alternative to `render.zig`'s HTML rendering (bold/italic via ANSI escapes, code spans dimmed, headings bolded — conceptually the same override mechanism `markdown.zig` already uses for zmd's `Formatters`, just targeting a different output)
+### 10.1 `zkdocs show <symbol>` / `--dump` Command — done
+- `src/show.zig` + `src/term_render.zig` implement the ANSI terminal-formatting backend
+  (`printShow`/`printDump`/`printSymbolNames`), wired up in `main.zig` as the `show` sub-command,
+  `--dump`, and `--list-symbols`
 - `zkdocs show MyStruct` prints that symbol's signature, doc comment, and (for containers) its fields/methods directly to stdout
 - `zkdocs --dump` with no symbol prints the full project's API tree, for piping into `grep`/`less`
 
 #### Not there yet for show
 - Ability to dump an entire module, not just the imports.
-- 
 
-### 10.2 Shell Autocomplete
-- `zkdocs --generate-completion=bash|zsh|fish` emits a completion script that knows the current project's real module/symbol names (extracted the same way `--dump` does), so `zkdocs show <TAB>` completes to actual symbols, not just static flag names
-- Ties into zargunaught's existing arg-parsing; the dynamic part (symbol names) needs its own completion function per shell
+### 10.2 Shell Autocomplete — done
+- `src/completion.zig` + `--generate-completion=bash|zsh|fish` in `main.zig`; `--list-symbols` feeds
+  the dynamic completion function with real module/symbol names per the project's own conf/root
 
 ### 10.3 Pager Integration
 - When stdout is a TTY and output exceeds one screen, pipe through `$PAGER` (falling back to `less`), mirroring `git help`/`man` — avoids scrollback spam for a whole-project `--dump`

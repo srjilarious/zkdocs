@@ -87,7 +87,29 @@ pub const SiteContext = struct {
     cache: *cache_mod.Cache,
     type_index: TypeIndex,
     progress: *Progress,
+    /// Extra stylesheet paths (conf `"extra_css"`), already rewritten to
+    /// their output-relative location under `assets/`.
+    extra_css: []const []const u8,
+    /// Verbatim HTML injected near the top of `<body>`.
+    header_html: ?[]const u8,
+    /// Verbatim HTML injected into the site footer.
+    footer_html: ?[]const u8,
+    /// Logo image path relative to the output root (e.g. `assets/logo.png`), or null.
+    logo_rel: ?[]const u8,
+    /// Favicon image path relative to the output root, or null.
+    favicon_rel: ?[]const u8,
+    /// Fixed absolute base path the site is served under (conf `"base_url"`),
+    /// or null to use the normal per-page relative prefix.
+    base_url: ?[]const u8,
 };
+
+/// Resolve the href prefix to use for a page: the fixed `base_url` when
+/// configured (so links are correct regardless of on-disk nesting depth
+/// once deployed under a sub-path), otherwise the caller-computed
+/// depth-relative prefix (`.`, `..`, `../..`, ...).
+pub fn prefixFor(ctx: *const SiteContext, relative_prefix: []const u8) []const u8 {
+    return ctx.base_url orelse relative_prefix;
+}
 
 // ---------------------------------------------------------------------------
 // Internal write buffer

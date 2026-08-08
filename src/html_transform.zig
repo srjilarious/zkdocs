@@ -213,10 +213,12 @@ fn isRelativeUrl(url: []const u8) bool {
     return url.len > 0;
 }
 
-/// Copy an image from `conf_dir/rel_path` into `out_dir/assets/rel_path`,
+/// Copy a file from `conf_dir/rel_path` into `out_dir/assets/rel_path`,
 /// creating intermediate directories as needed.
 /// Records the source asset path in `cache` so future runs can detect changes.
-fn copyImageFile(
+/// Used both for in-content `<img>` sources and for conf-level assets
+/// (logo, favicon, extra_css).
+pub fn copyAssetFile(
     io: std.Io,
     allocator: std.mem.Allocator,
     conf_dir: []const u8,
@@ -346,7 +348,7 @@ pub fn rewriteAttributes(
             .src => {
                 const ictx = image_ctx.?;
                 if (isRelativeUrl(value)) {
-                    copyImageFile(ictx.io, allocator, ictx.conf_dir, value, ictx.out_dir, ictx.cache) catch |err| {
+                    copyAssetFile(ictx.io, allocator, ictx.conf_dir, value, ictx.out_dir, ictx.cache) catch |err| {
                         std.debug.print("Warning: could not copy image '{s}': {}\n", .{ value, err });
                     };
                     const img_src = try std.fmt.allocPrint(allocator, "src=\"{s}/assets/{s}", .{ prefix, value });

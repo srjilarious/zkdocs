@@ -58,6 +58,11 @@ pub fn main(init: std.process.Init) !void {
                 .maxNumParams = 1,
             },
             .{
+                .longName = "base-url",
+                .description = "Absolute base path the site is served under, e.g. /project/ (overrides conf `base_url`).",
+                .maxNumParams = 1,
+            },
+            .{
                 .longName = "dump",
                 .shortName = "d",
                 .description = "Dump the full extracted symbol tree to stdout (for piping into grep/less).",
@@ -180,6 +185,10 @@ pub fn main(init: std.process.Init) !void {
         break :blk emoji.Provider.unicode;
     };
 
+    const base_url: ?[]const u8 = if (args.optionVal("base-url")) |bu|
+        std.mem.trimEnd(u8, bu, "/")
+    else if (site_conf) |sc| sc.base_url else null;
+
     const out_path = args.optionVal("out");
 
     const mode_count: u8 =
@@ -267,6 +276,11 @@ pub fn main(init: std.process.Init) !void {
         const home_slug: ?[]const u8 = if (site_conf) |sc| sc.home_slug else null;
         const show_imports = if (site_conf) |sc| sc.show_imports else false;
         const repo_url: ?[]const u8 = if (site_conf) |sc| sc.repo else null;
+        const extra_css: []const []const u8 = if (site_conf) |sc| sc.extra_css else &.{};
+        const header_html: ?[]const u8 = if (site_conf) |sc| sc.header_html else null;
+        const footer_html: ?[]const u8 = if (site_conf) |sc| sc.footer_html else null;
+        const logo: ?[]const u8 = if (site_conf) |sc| sc.logo else null;
+        const favicon: ?[]const u8 = if (site_conf) |sc| sc.favicon else null;
         try render.renderSite(init.io, allocator, .{
             .out_path = op,
             .project_name = project_name,
@@ -281,6 +295,12 @@ pub fn main(init: std.process.Init) !void {
             .conf_abs_path = conf_abs_path,
             .show_imports = show_imports,
             .repo_url = repo_url,
+            .extra_css = extra_css,
+            .header_html = header_html,
+            .footer_html = footer_html,
+            .logo = logo,
+            .favicon = favicon,
+            .base_url = base_url,
         });
     } else {
         std.debug.print("Nothing to do: pass --out to build a site, --dump to print the symbol tree, or `show <symbol>` to print one symbol.\n", .{});

@@ -125,6 +125,8 @@
       nav.classList.remove('open');
       if (toc) toc.classList.remove('open');
       overlay.classList.remove('active');
+      navBtn.setAttribute('aria-expanded', 'false');
+      if (tocBtn) tocBtn.setAttribute('aria-expanded', 'false');
     }
 
     navBtn.addEventListener('click', function () {
@@ -133,6 +135,7 @@
       if (opening) {
         nav.classList.add('open');
         overlay.classList.add('active');
+        navBtn.setAttribute('aria-expanded', 'true');
       }
     });
 
@@ -143,11 +146,96 @@
         if (opening) {
           toc.classList.add('open');
           overlay.classList.add('active');
+          tocBtn.setAttribute('aria-expanded', 'true');
         }
       });
     }
 
     overlay.addEventListener('click', closeAll);
+  }
+
+  // ── Collapsible symbol sections ─────────────────────────────────────────────
+  // Each `.symbol` on an API page is a native <details>. Collapsed state is
+  // persisted per-page (keyed by pathname) in localStorage so it survives
+  // reloads, and a global "Collapse all / Expand all" pair toggles every
+  // symbol on the page at once.
+
+  function initSymbolCollapse() {
+    var symbols = document.querySelectorAll('details.symbol');
+    if (!symbols.length) return;
+
+    var storageKey = 'zkdocs-collapsed:' + location.pathname;
+
+    function loadCollapsed() {
+      try {
+        var raw = localStorage.getItem(storageKey);
+        return raw ? JSON.parse(raw) : [];
+      } catch (_) { return []; }
+    }
+
+    function saveCollapsed(ids) {
+      try { localStorage.setItem(storageKey, JSON.stringify(ids)); } catch (_) {}
+    }
+
+    var collapsed = loadCollapsed();
+    symbols.forEach(function (el) {
+      if (el.id && collapsed.indexOf(el.id) !== -1) el.removeAttribute('open');
+    });
+
+    symbols.forEach(function (el) {
+      el.addEventListener('toggle', function () {
+        if (!el.id) return;
+        var ids = loadCollapsed();
+        var idx = ids.indexOf(el.id);
+        if (el.open && idx !== -1) {
+          ids.splice(idx, 1);
+        } else if (!el.open && idx === -1) {
+          ids.push(el.id);
+        } else {
+          return;
+        }
+        saveCollapsed(ids);
+      });
+    });
+
+    var collapseBtn = document.getElementById('collapse-all-btn');
+    var expandBtn   = document.getElementById('expand-all-btn');
+
+    if (collapseBtn) {
+      collapseBtn.addEventListener('click', function () {
+        var ids = [];
+        symbols.forEach(function (el) {
+          el.removeAttribute('open');
+          if (el.id) ids.push(el.id);
+        });
+        saveCollapsed(ids);
+      });
+    }
+    if (expandBtn) {
+      expandBtn.addEventListener('click', function () {
+        symbols.forEach(function (el) { el.setAttribute('open', ''); });
+        saveCollapsed([]);
+      });
+    }
+  }
+
+  // ── Print support ────────────────────────────────────────────────────────────
+  // Force every collapsed <details> open before printing so nothing collapsed
+  // is silently omitted from the printed page, then restore prior state after.
+
+  function initPrintExpand() {
+    var reopened = [];
+    window.addEventListener('beforeprint', function () {
+      reopened = [];
+      document.querySelectorAll('details:not([open])').forEach(function (el) {
+        reopened.push(el);
+        el.setAttribute('open', '');
+      });
+    });
+    window.addEventListener('afterprint', function () {
+      reopened.forEach(function (el) { el.removeAttribute('open'); });
+      reopened = [];
+    });
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────────
@@ -157,6 +245,8 @@
     initSearch();
     initCopyButtons();
     initMobileNav();
+    initSymbolCollapse();
+    initPrintExpand();
   });
 
 }());

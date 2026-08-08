@@ -207,6 +207,23 @@ pub const SiteConf = struct {
     /// Repository URL (`"repo"` key), or null if absent.
     /// When set, a source-control icon linking to this URL is shown next to the project name.
     repo: ?[]const u8,
+    /// Extra stylesheet paths (`"extra_css"` array), relative to `conf_dir`.
+    /// Copied into `assets/` and linked after the built-in stylesheet.
+    extra_css: [][]const u8,
+    /// Verbatim HTML injected near the top of `<body>` (`"header_html"` key).
+    header_html: ?[]const u8,
+    /// Verbatim HTML injected into the site footer (`"footer_html"` key).
+    footer_html: ?[]const u8,
+    /// Logo image path (`"logo"` key), relative to `conf_dir`. Copied into
+    /// `assets/` and shown in the sidebar header above the project name.
+    logo: ?[]const u8,
+    /// Favicon image path (`"favicon"` key), relative to `conf_dir`. Copied
+    /// into `assets/` and referenced via `<link rel="icon">`.
+    favicon: ?[]const u8,
+    /// Absolute base path the site is served under (`"base_url"` key), e.g.
+    /// `/project/` for a GitHub Pages project site. When set, all nav/asset
+    /// links use this fixed absolute prefix instead of a per-page relative one.
+    base_url: ?[]const u8,
 
     pub fn deinit(self: *SiteConf, allocator: std.mem.Allocator) void {
         if (self.name) |n| allocator.free(n);
@@ -219,6 +236,13 @@ pub const SiteConf = struct {
         allocator.free(self.conf_dir);
         if (self.home_slug) |hs| allocator.free(hs);
         if (self.repo) |r| allocator.free(r);
+        for (self.extra_css) |c| allocator.free(c);
+        allocator.free(self.extra_css);
+        if (self.header_html) |h| allocator.free(h);
+        if (self.footer_html) |f| allocator.free(f);
+        if (self.logo) |l| allocator.free(l);
+        if (self.favicon) |f| allocator.free(f);
+        if (self.base_url) |b| allocator.free(b);
     }
 };
 
@@ -363,6 +387,58 @@ pub fn loadSiteConf(io: std.Io, allocator: std.mem.Allocator, conf_path: []const
         null;
     errdefer if (repo) |r| allocator.free(r);
 
+    // --- extra_css ---
+    var extra_css_list = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (extra_css_list.items) |c| allocator.free(c);
+        extra_css_list.deinit(allocator);
+    }
+    if (obj.get("extra_css")) |cv| if (cv == .array) {
+        for (cv.array.items) |item| {
+            if (item != .string) continue;
+            try extra_css_list.append(allocator, try allocator.dupe(u8, item.string));
+        }
+    };
+    const extra_css = try extra_css_list.toOwnedSlice(allocator);
+    errdefer {
+        for (extra_css) |c| allocator.free(c);
+        allocator.free(extra_css);
+    }
+
+    // --- header_html / footer_html ---
+    const header_html: ?[]const u8 = if (obj.get("header_html")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (header_html) |h| allocator.free(h);
+
+    const footer_html: ?[]const u8 = if (obj.get("footer_html")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (footer_html) |f| allocator.free(f);
+
+    // --- logo / favicon ---
+    const logo: ?[]const u8 = if (obj.get("logo")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (logo) |l| allocator.free(l);
+
+    const favicon: ?[]const u8 = if (obj.get("favicon")) |v|
+        if (v == .string) try allocator.dupe(u8, v.string) else null
+    else
+        null;
+    errdefer if (favicon) |f| allocator.free(f);
+
+    // --- base_url ---
+    const base_url: ?[]const u8 = if (obj.get("base_url")) |v| blk: {
+        if (v != .string) break :blk null;
+        const trimmed = std.mem.trimEnd(u8, v.string, "/");
+        break :blk try allocator.dupe(u8, trimmed);
+    } else null;
+    errdefer if (base_url) |b| allocator.free(b);
+
     return .{
         .name = name,
         .sources = sources,
@@ -373,5 +449,11 @@ pub fn loadSiteConf(io: std.Io, allocator: std.mem.Allocator, conf_path: []const
         .home_slug = home_slug,
         .show_imports = show_imports,
         .repo = repo,
+        .extra_css = extra_css,
+        .header_html = header_html,
+        .footer_html = footer_html,
+        .logo = logo,
+        .favicon = favicon,
+        .base_url = base_url,
     };
 }

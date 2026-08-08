@@ -94,8 +94,8 @@ pub fn writeDoc(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
     const code_linked = try html_transform.linkCodeSymbols(buf.alloc, with_emoji, &ctx.type_index, current_module);
     defer buf.alloc.free(code_linked);
     // API pages always live one directory below the site root (`api/<module>.html`),
-    // so the prefix is always "..".
-    const html = try html_transform.resolveInternalLinks(buf.alloc, code_linked, ctx.mods, "..");
+    // so the relative prefix is always ".." (overridden by base_url when configured).
+    const html = try html_transform.resolveInternalLinks(buf.alloc, code_linked, ctx.mods, site_context.prefixFor(ctx, ".."));
     defer buf.alloc.free(html);
     try buf.writeAll("<div class=\"symbol-doc\">");
     try buf.writeAll(html);
@@ -199,31 +199,45 @@ pub fn writeHeader(
         \\<title>
     , .{});
     try htmlEscape(buf, title);
+    try buf.writeAll("</title>\n");
+    if (ctx.favicon_rel) |fav| {
+        try buf.print("<link rel=\"icon\" href=\"{s}/{s}\">\n", .{ prefix, fav });
+    }
     try buf.print(
-        \\</title>
         \\<link rel="stylesheet" href="{s}/assets/style.css">
+        \\
+    , .{prefix});
+    for (ctx.extra_css) |css_path| {
+        try buf.print("<link rel=\"stylesheet\" href=\"{s}/{s}\">\n", .{ prefix, css_path });
+    }
+    try buf.print(
         \\<script>window.ZKDOCS_BASE='{s}/';</script>
         \\<script src="{s}/assets/minisearch.min.js" defer></script>
         \\<script src="{s}/assets/search-data.js" defer></script>
         \\<script src="{s}/assets/search.js" defer></script>
         \\</head>
         \\<body>
-    , .{ prefix, prefix, prefix, prefix, prefix });
+        \\<a class="skip-link" href="#main-content">Skip to main content</a>
+    , .{ prefix, prefix, prefix, prefix });
+    if (ctx.header_html) |hh| try buf.writeAll(hh);
     // Mobile top bar
     try buf.print(
         \\<div class="mobile-bar">
-        \\<button class="mob-btn" id="nav-toggle" aria-label="Open navigation"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+        \\<button class="mob-btn" id="nav-toggle" aria-label="Open navigation" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
         \\<a class="mob-title" href="{s}/index.html">
     , .{prefix});
     try htmlEscape(buf, ctx.project_name);
     try buf.writeAll(
         \\</a>
-        \\<button class="mob-btn" id="toc-toggle" aria-label="On this page"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1.5" fill="currentColor"/><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="3" cy="18" r="1.5" fill="currentColor"/></svg></button>
+        \\<button class="mob-btn" id="toc-toggle" aria-label="On this page" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1.5" fill="currentColor"/><circle cx="3" cy="12" r="1.5" fill="currentColor"/><circle cx="3" cy="18" r="1.5" fill="currentColor"/></svg></button>
         \\</div>
         \\<div class="overlay" id="overlay"></div>
-        \\<nav class="sidebar">
+        \\<nav class="sidebar" role="navigation" aria-label="Sidebar">
         \\
     );
+    if (ctx.logo_rel) |logo| {
+        try buf.print("<img class=\"site-logo\" src=\"{s}/{s}\" alt=\"\">\n", .{ prefix, logo });
+    }
     try buf.writeAll("<div class=\"logo-row\">");
     try buf.print("<a class=\"logo\" href=\"{s}/index.html\">", .{prefix});
     try htmlEscape(buf, ctx.project_name);
@@ -236,8 +250,8 @@ pub fn writeHeader(
     try buf.writeAll("</div>\n");
     // Search bar
     try buf.writeAll(
-        \\<div class="search-box">
-        \\<input type="search" id="search-input" placeholder="Search docs&#x2026;" autocomplete="off" spellcheck="false">
+        \\<div class="search-box" role="search">
+        \\<input type="search" id="search-input" placeholder="Search docs&#x2026;" aria-label="Search documentation" autocomplete="off" spellcheck="false">
         \\<div class="search-results" id="search-results"></div>
         \\</div>
         \\
@@ -259,11 +273,11 @@ pub fn writeHeader(
         try buf.writeAll("</ul>\n</details>\n");
     }
 
-    try buf.writeAll("</nav>\n<div class=\"page-body\">\n<main>\n");
+    try buf.writeAll("</nav>\n<div class=\"page-body\">\n<main id=\"main-content\">\n");
 }
 
 pub fn writeFooter(buf: *Buf, ctx: *const SiteContext) !void {
-    try buf.writeAll("\n</main>\n<footer class=\"site-footer\">\n<span class=\"footer-project\">");
+    try buf.writeAll("\n</main>\n<footer class=\"site-footer\">\n<div class=\"footer-row\">\n<span class=\"footer-project\">");
     if (ctx.repo_url) |rurl| {
         try buf.writeAll("<a href=\"");
         try htmlEscape(buf, rurl);
@@ -273,7 +287,9 @@ pub fn writeFooter(buf: *Buf, ctx: *const SiteContext) !void {
     } else {
         try htmlEscape(buf, ctx.project_name);
     }
-    try buf.writeAll("</span>\n<span class=\"footer-generated\">Generated with <a href=\"" ++ ZKDOCS_REPO_URL ++ "\" target=\"_blank\" rel=\"noopener noreferrer\">zkdocs</a> " ++ ZKDOCS_VERSION ++ "</span>\n</footer>\n</div>\n</body>\n</html>\n");
+    try buf.writeAll("</span>\n<span class=\"footer-generated\">Generated with <a href=\"" ++ ZKDOCS_REPO_URL ++ "\" target=\"_blank\" rel=\"noopener noreferrer\">zkdocs</a> " ++ ZKDOCS_VERSION ++ "</span>\n</div>\n");
+    if (ctx.footer_html) |fh| try buf.writeAll(fh);
+    try buf.writeAll("</footer>\n</div>\n</body>\n</html>\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -467,9 +483,9 @@ pub fn writeGuideToc(buf: *Buf, raw_content: []const u8) !void {
 
 pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, f: symbols.Function, parent_container: ?[]const u8) !void {
     if (parent_container) |pc| {
-        try buf.print("<div class=\"symbol\" id=\"sym-{s}-{s}\">\n", .{ pc, f.name });
+        try buf.print("<details class=\"symbol\" id=\"sym-{s}-{s}\" open>\n<summary>\n", .{ pc, f.name });
     } else {
-        try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{f.name});
+        try buf.print("<details class=\"symbol\" id=\"sym-{s}\" open>\n<summary>\n", .{f.name});
     }
     const has_badges = f.generic_return != null or f.is_extern or f.is_export or f.is_comptime_only;
     if (has_badges) {
@@ -511,6 +527,7 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
         if (f.is_comptime_only) try buf.writeAll("<span class=\"pill\">comptime</span>");
         try buf.writeAll("</div>\n");
     }
+    try buf.writeAll("</summary>\n");
     if (f.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
     if (f.inline_errors.len > 0) {
@@ -562,7 +579,7 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
         }
     }
 
-    try buf.writeAll("</div>\n");
+    try buf.writeAll("</details>\n");
 }
 
 /// Shared `Error | Description` table for an error set's members, used by
@@ -585,7 +602,7 @@ fn writeErrorsTable(buf: *Buf, errors: []const symbols.ErrorVal) !void {
 }
 
 pub fn renderErrorSet(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, e: symbols.ErrorSet) !void {
-    try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{e.name});
+    try buf.print("<details class=\"symbol\" id=\"sym-{s}\" open>\n<summary>\n", .{e.name});
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (e.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     try buf.print(
@@ -593,9 +610,10 @@ pub fn renderErrorSet(buf: *Buf, ctx: *const SiteContext, current_module: []cons
         .{e.name},
     );
     try buf.writeAll("</code></div>\n");
+    try buf.writeAll("</summary>\n");
     if (e.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
     if (e.errors.len > 0) try writeErrorsTable(buf, e.errors);
-    try buf.writeAll("</div>\n");
+    try buf.writeAll("</details>\n");
 }
 
 /// Zig-highlight `src`, falling back to plain HTML-escaped text if
@@ -619,8 +637,9 @@ fn highlightZigOrEscape(alloc: std.mem.Allocator, src: []const u8) ![]const u8 {
 /// block's source. `index` disambiguates the anchor id among a page's other
 /// comptime blocks, since the block itself has no name.
 pub fn renderComptimeBlock(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, index: usize, cb: symbols.ComptimeBlock) !void {
-    try buf.print("<div class=\"symbol\" id=\"sym-comptime-{d}\">\n", .{index});
+    try buf.print("<details class=\"symbol\" id=\"sym-comptime-{d}\" open>\n<summary>\n", .{index});
     try buf.writeAll("<div class=\"symbol-sig\"><code><span class=\"kw\">comptime</span> { &hellip; }</code></div>\n");
+    try buf.writeAll("</summary>\n");
     if (cb.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
     const highlighted = try highlightZigOrEscape(buf.alloc, cb.body_src);
@@ -629,11 +648,11 @@ pub fn renderComptimeBlock(buf: *Buf, ctx: *const SiteContext, current_module: [
     try buf.writeAll(highlighted);
     try buf.writeAll("</code></pre></details>\n");
 
-    try buf.writeAll("</div>\n");
+    try buf.writeAll("</details>\n");
 }
 
 pub fn renderContainer(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, c: symbols.Container) !void {
-    try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{c.name});
+    try buf.print("<details class=\"symbol\" id=\"sym-{s}\" open>\n<summary>\n", .{c.name});
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (c.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     if (c.layout) |l| try buf.print("<span class=\"kw\">{s} </span>", .{@tagName(l)});
@@ -642,6 +661,7 @@ pub fn renderContainer(buf: *Buf, ctx: *const SiteContext, current_module: []con
         .{ @tagName(c.kind), c.name },
     );
     try buf.writeAll("</code></div>\n");
+    try buf.writeAll("</summary>\n");
     if (c.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
     if (c.fields.len > 0) {
@@ -677,11 +697,11 @@ pub fn renderContainer(buf: *Buf, ctx: *const SiteContext, current_module: []con
         try buf.writeAll("</div>\n");
     }
 
-    try buf.writeAll("</div>\n");
+    try buf.writeAll("</details>\n");
 }
 
 pub fn renderVar(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, v: symbols.Variable) !void {
-    try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{v.name});
+    try buf.print("<details class=\"symbol\" id=\"sym-{s}\" open>\n<summary>\n", .{v.name});
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (v.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
     try buf.writeAll("<span class=\"kw\">const </span>");
@@ -700,6 +720,7 @@ pub fn renderVar(buf: *Buf, ctx: *const SiteContext, current_module: []const u8,
         }
     }
     try buf.writeAll("</code></div>\n");
+    try buf.writeAll("</summary>\n");
     if (v.value_src) |val| {
         if (std.mem.indexOfScalar(u8, val, '\n') != null) {
             try buf.writeAll("<details class=\"sym-value-details\"><summary>value</summary><pre><code>");
@@ -708,7 +729,7 @@ pub fn renderVar(buf: *Buf, ctx: *const SiteContext, current_module: []const u8,
         }
     }
     if (v.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
-    try buf.writeAll("</div>\n");
+    try buf.writeAll("</details>\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -761,12 +782,12 @@ pub fn renderMarkdownPage(
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, ctx.project_name });
     defer allocator.free(title);
 
-    const prefix: []const u8 = if (is_home)
+    const prefix: []const u8 = site_context.prefixFor(ctx, if (is_home)
         "."
     else if (std.mem.indexOfScalar(u8, entry.slug, '/') != null)
         "../.."
     else
-        "..";
+        "..");
 
     try writeHeader(&buf, ctx, title, null, entry.slug, prefix);
 
@@ -873,12 +894,12 @@ pub fn renderZigPage(
     const title = try std.fmt.allocPrint(allocator, "{s} — {s}", .{ entry.title, ctx.project_name });
     defer allocator.free(title);
 
-    const prefix: []const u8 = if (is_home)
+    const prefix: []const u8 = site_context.prefixFor(ctx, if (is_home)
         "."
     else if (std.mem.indexOfScalar(u8, entry.slug, '/') != null)
         "../.."
     else
-        "..";
+        "..");
 
     try writeHeader(&buf, ctx, title, null, entry.slug, prefix);
     // Zig pages have no right-sidebar TOC; reclaim that margin.

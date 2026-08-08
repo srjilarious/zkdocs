@@ -81,6 +81,19 @@ pub const RenderSiteOptions = struct {
     show_imports: bool,
     /// Repository URL from the `"repo"` config key, or null if absent.
     repo_url: ?[]const u8,
+    /// Extra stylesheet paths (`"extra_css"` conf key), relative to `conf_dir`.
+    extra_css: []const []const u8,
+    /// Verbatim HTML injected near the top of `<body>` (`"header_html"` conf key).
+    header_html: ?[]const u8,
+    /// Verbatim HTML injected into the site footer (`"footer_html"` conf key).
+    footer_html: ?[]const u8,
+    /// Logo image path (`"logo"` conf key), relative to `conf_dir`.
+    logo: ?[]const u8,
+    /// Favicon image path (`"favicon"` conf key), relative to `conf_dir`.
+    favicon: ?[]const u8,
+    /// Fixed absolute base path the site is served under (`"base_url"` conf key
+    /// or `--base-url` flag), or null to use per-page relative prefixes.
+    base_url: ?[]const u8,
 };
 
 /// `Io.Group.async` entry point for `renderModulePage`: renders one module's
@@ -104,7 +117,7 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
     const title = try std.fmt.allocPrint(ctx.allocator, "{s} — {s}", .{ mod.name, ctx.project_name });
     defer ctx.allocator.free(title);
 
-    try page_render.writeHeader(&buf, ctx, title, mod.name, null, "..");
+    try page_render.writeHeader(&buf, ctx, title, mod.name, null, site_context.prefixFor(ctx, ".."));
 
     try buf.writeAll("<h1>");
     try htmlEscape(&buf, mod.name);
@@ -136,6 +149,16 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
             .comptime_block => has_comptime_blocks = true,
             .@"test", .other => {},
         }
+    }
+
+    if (has_types or has_errors or has_fns or has_consts or has_comptime_blocks) {
+        try buf.writeAll(
+            \\<div class="collapse-toggle-row">
+            \\<button type="button" id="collapse-all-btn">Collapse all</button>
+            \\<button type="button" id="expand-all-btn">Expand all</button>
+            \\</div>
+            \\
+        );
     }
 
     if (has_types) {
@@ -225,6 +248,47 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
     var type_index = try buildTypeIndex(allocator, opts.mods);
     defer type_index.deinit();
 
+    var out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, opts.out_path, .{});
+    defer out_dir.close(io);
+
+    // ── Copy conf-provided assets (logo, favicon, extra_css) ─────────────────
+    // These only make sense relative to a conf file; silently skipped otherwise.
+    var extra_css_rel: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (extra_css_rel.items) |c| allocator.free(c);
+        extra_css_rel.deinit(allocator);
+    }
+    var logo_rel: ?[]const u8 = null;
+    defer if (logo_rel) |l| allocator.free(l);
+    var favicon_rel: ?[]const u8 = null;
+    defer if (favicon_rel) |f| allocator.free(f);
+
+    if (opts.conf_dir) |cd| {
+        try out_dir.createDirPath(io, "assets");
+        for (opts.extra_css) |rel_path| {
+            html_transform.copyAssetFile(io, allocator, cd, rel_path, out_dir, opts.cache) catch |err| {
+                std.debug.print("  warning: could not copy extra_css '{s}': {}\n", .{ rel_path, err });
+                continue;
+            };
+            const dest = try std.fs.path.join(allocator, &.{ "assets", rel_path });
+            try extra_css_rel.append(allocator, dest);
+        }
+        if (opts.logo) |rel_path| blk: {
+            html_transform.copyAssetFile(io, allocator, cd, rel_path, out_dir, opts.cache) catch |err| {
+                std.debug.print("  warning: could not copy logo '{s}': {}\n", .{ rel_path, err });
+                break :blk;
+            };
+            logo_rel = try std.fs.path.join(allocator, &.{ "assets", rel_path });
+        }
+        if (opts.favicon) |rel_path| blk: {
+            html_transform.copyAssetFile(io, allocator, cd, rel_path, out_dir, opts.cache) catch |err| {
+                std.debug.print("  warning: could not copy favicon '{s}': {}\n", .{ rel_path, err });
+                break :blk;
+            };
+            favicon_rel = try std.fs.path.join(allocator, &.{ "assets", rel_path });
+        }
+    }
+
     var ctx = SiteContext{
         .io = io,
         .allocator = allocator,
@@ -240,10 +304,13 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
         .cache = opts.cache,
         .type_index = type_index,
         .progress = opts.progress,
+        .extra_css = extra_css_rel.items,
+        .header_html = opts.header_html,
+        .footer_html = opts.footer_html,
+        .logo_rel = logo_rel,
+        .favicon_rel = favicon_rel,
+        .base_url = opts.base_url,
     };
-
-    var out_dir = try std.Io.Dir.cwd().createDirPathOpen(io, opts.out_path, .{});
-    defer out_dir.close(io);
 
     // ── Determine what changed since the last run ────────────────────────────
     const conf_changed = if (opts.conf_abs_path) |cp|
@@ -320,7 +387,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
             var buf = Buf.init(allocator);
             defer buf.deinit();
 
-            try page_render.writeHeader(&buf, &ctx, ctx.project_name, null, null, ".");
+            try page_render.writeHeader(&buf, &ctx, ctx.project_name, null, null, site_context.prefixFor(&ctx, "."));
 
             try buf.writeAll("<h1>");
             try htmlEscape(&buf, ctx.project_name);

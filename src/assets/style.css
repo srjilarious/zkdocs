@@ -144,6 +144,8 @@ main {
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: .78rem;
+}
+.site-footer .footer-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -173,7 +175,9 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
   margin-bottom: 1.5rem;
 }
 
-/* ── Symbol cards ── */
+/* ── Symbol cards ──
+   Each `.symbol` is a native <details> so it can be collapsed/expanded and
+   its state persisted; the signature block is wrapped in <summary>. */
 .symbol {
   margin-bottom: 1.25rem;
   background: var(--bg-card);
@@ -181,11 +185,72 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
   border-radius: 8px;
   padding: 1rem 1.25rem;
 }
+details.symbol > summary {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  cursor: pointer;
+  list-style: none;
+}
+details.symbol > summary::-webkit-details-marker { display: none; }
+details.symbol > summary::before {
+  content: '▸';
+  flex-shrink: 0;
+  width: .8em;
+  margin-top: .15em;
+  color: var(--muted);
+  font-size: .8em;
+  transition: transform .15s;
+}
+details.symbol[open] > summary::before { transform: rotate(90deg); }
+details.symbol > summary > * { min-width: 0; }
 .symbol-sig-row {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: .5rem;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Collapse-all / Expand-all toggle ── */
+.collapse-toggle-row {
+  display: flex;
+  gap: .5rem;
+  margin: 0 0 1rem;
+}
+.collapse-toggle-row button {
+  padding: .3rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: .8rem;
+  cursor: pointer;
+}
+.collapse-toggle-row button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Accessibility: skip link ── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 0;
+  z-index: 100;
+  padding: .6rem 1rem;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 6px 0;
+}
+.skip-link:focus { top: 0; }
+
+/* ── Sidebar logo image ── */
+.site-logo {
+  display: block;
+  max-width: 100%;
+  max-height: 48px;
+  margin: 0 0 .75rem;
 }
 .pill {
   flex-shrink: 0;
@@ -711,7 +776,7 @@ pre:hover .copy-btn { opacity: 1; }
   --bg-card:   rgba(255,255,255,.06);
   --bg-sidebar:#0f100a;
   --text:      #f8f8f2;
-  --muted:     #857e68;
+  --muted:     #928a72; /* lightened from #857e68 to clear WCAG AA 4.5:1 on --bg */
   --border:    #2e2d24;
   --fn:        #a6e22e;
   --kw:        #f92672;
@@ -735,13 +800,13 @@ pre:hover .copy-btn { opacity: 1; }
   --bg-card:   #f8f8f8;
   --bg-sidebar:#f3f3f3;
   --text:      #1f1f1f;
-  --muted:     #717171;
+  --muted:     #656565; /* darkened from #717171 to clear WCAG AA 4.5:1 in the sidebar */
   --border:    #d4d4d4;
   --fn:        #795e26;
   --kw:        #0000ff;
-  --type:      #267f99;
+  --type:      #227289; /* darkened from #267f99 to clear WCAG AA 4.5:1 on code backgrounds */
   --str:       #a31515;
-  --num:       #098658;
+  --num:       #08784f; /* darkened from #098658 to clear WCAG AA 4.5:1 on code backgrounds */
 }
 [data-theme="vscode-light"] h1                     { color: #1f1f1f; }
 [data-theme="vscode-light"] .guide-content h1      { color: #1f1f1f; }
@@ -856,4 +921,51 @@ details.example-collapsed > pre.example-code {
 }
 details.example-collapsed > .example-prose {
   padding: .5rem .75rem;
+}
+
+/* ═══════════════════════════════════════════════
+   Print stylesheet
+   ─────────────────────────────────────────────── */
+@media print {
+  /* Chrome flattens generated-content color/backgrounds via -webkit-print-color-adjust;
+     force it so pills/highlighting survive, but keep the page itself plain black-on-white. */
+  * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+
+  nav.sidebar,
+  aside.page-toc,
+  .mobile-bar,
+  .overlay,
+  .skip-link,
+  .collapse-toggle-row,
+  .copy-btn,
+  #raw-toggle,
+  .search-box {
+    display: none !important;
+  }
+
+  .page-body { margin-left: 0; margin-right: 0; }
+  main { padding: 0; }
+  .site-footer { padding: .75rem 0; }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+  main, .symbol, .guide-content, .site-footer {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .symbol { border-color: #ccc; break-inside: avoid; }
+  .symbol-doc, .mod-doc, .mod-path, .muted { color: #333 !important; }
+  a { color: #000 !important; text-decoration: underline; }
+
+  /* search.js's beforeprint handler adds `open` to every <details> so
+     nothing collapsed is silently omitted; this is a CSS-only backstop for
+     when scripts are disabled (some browsers do honor it on closed <details>). */
+  details:not([open]) > *:not(summary) { display: block !important; }
+  details > summary::-webkit-details-marker,
+  details > summary::before { display: none !important; }
+
+  h1, h2, h3, h4 { color: #000 !important; }
+  pre, code { background: #f3f3f3 !important; color: #000 !important; }
 }
