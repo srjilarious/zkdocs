@@ -1,6 +1,7 @@
 //! Post-processing passes over rendered page HTML: linking bare `<code>`
-//! spans to known symbols, resolving `sym:`/`mod:`/`page:` internal link
-//! schemes, and copying+rewriting relative image sources.
+//! spans to known symbols, and (in one combined pass) resolving
+//! `sym:`/`mod:`/`page:` internal link schemes and copying+rewriting
+//! relative image sources.
 
 const std = @import("std");
 const symbols = @import("./symbols.zig");
@@ -201,114 +202,6 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
     return null;
 }
 
-/// Rewrite internal link schemes produced by the markdown parser into proper relative URLs.
-///
-/// Supported syntax in page markdown:
-///   `[text](sym:Name)`             → any public symbol (searched across all modules)
-///   `[text](sym:module.Name)`      → symbol qualified by module name
-///   `[text](sym:Container.method)` → method anchor (when first part is not a module)
-///   `[text](mod:name)`             → module API page (`api/name.html`)
-///   `[text](page:slug)`            → another page (`page/slug.html`)
-///   `[text](guide:slug)`           → another page, backward-compat alias for `page:slug`
-pub fn resolveInternalLinks(
-    allocator: std.mem.Allocator,
-    html: []const u8,
-    mods: []const symbols.Module,
-    prefix: []const u8,
-) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    var rest = html;
-    while (true) {
-        const sym_pos = std.mem.indexOf(u8, rest, "href=\"sym:");
-        const mod_pos = std.mem.indexOf(u8, rest, "href=\"mod:");
-        const guide_pos = std.mem.indexOf(u8, rest, "href=\"guide:");
-        const page_pos = std.mem.indexOf(u8, rest, "href=\"page:");
-
-        // Pick the earliest marker.
-        var fp: usize = std.math.maxInt(usize);
-        if (sym_pos) |p| fp = @min(fp, p);
-        if (mod_pos) |p| fp = @min(fp, p);
-        if (guide_pos) |p| fp = @min(fp, p);
-        if (page_pos) |p| fp = @min(fp, p);
-        if (fp == std.math.maxInt(usize)) {
-            try out.appendSlice(allocator, rest);
-            break;
-        }
-
-        try out.appendSlice(allocator, rest[0..fp]);
-
-        const marker: []const u8 = if (sym_pos != null and fp == sym_pos.?)
-            "href=\"sym:"
-        else if (mod_pos != null and fp == mod_pos.?)
-            "href=\"mod:"
-        else if (guide_pos != null and fp == guide_pos.?)
-            "href=\"guide:"
-        else
-            "href=\"page:";
-
-        const after = rest[fp + marker.len ..];
-        const close = std.mem.indexOfScalar(u8, after, '"') orelse {
-            try out.appendSlice(allocator, marker);
-            rest = after;
-            continue;
-        };
-        const target = after[0..close];
-
-        if (std.mem.eql(u8, marker, "href=\"sym:")) {
-            if (findSymbolRef(mods, target)) |ref| {
-                if (ref.container) |cont| {
-                    const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html#sym-{s}-{s}", .{ prefix, ref.module_name, cont, ref.name });
-                    defer allocator.free(lnk);
-                    try out.appendSlice(allocator, lnk);
-                } else {
-                    const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html#sym-{s}", .{ prefix, ref.module_name, ref.name });
-                    defer allocator.free(lnk);
-                    try out.appendSlice(allocator, lnk);
-                }
-            } else {
-                const lnk = try std.fmt.allocPrint(allocator, "href=\"#sym-{s}", .{target});
-                defer allocator.free(lnk);
-                try out.appendSlice(allocator, lnk);
-            }
-        } else if (std.mem.eql(u8, marker, "href=\"mod:")) {
-            const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html", .{ prefix, target });
-            defer allocator.free(lnk);
-            try out.appendSlice(allocator, lnk);
-        } else {
-            // guide: (backward compat) or page:
-            const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/page/{s}.html", .{ prefix, target });
-            defer allocator.free(lnk);
-            try out.appendSlice(allocator, lnk);
-        }
-
-        rest = after[close..];
-
-        // For sym: links with no explicit link text, inject `<code>name</code>`
-        // so that `[](sym:Foo)` renders as [`Foo`](...) rather than a blank link.
-        if (std.mem.eql(u8, marker, "href=\"sym:")) {
-            if (std.mem.indexOf(u8, rest, ">")) |tag_end| {
-                const after_tag = rest[tag_end + 1 ..];
-                if (std.mem.startsWith(u8, after_tag, "</a>")) {
-                    const display_name = if (std.mem.lastIndexOfScalar(u8, target, '.')) |dot|
-                        target[dot + 1 ..]
-                    else
-                        target;
-                    try out.appendSlice(allocator, rest[0 .. tag_end + 1]);
-                    const code_tag = try std.fmt.allocPrint(allocator, "<code>{s}</code>", .{display_name});
-                    defer allocator.free(code_tag);
-                    try out.appendSlice(allocator, code_tag);
-                    try out.appendSlice(allocator, "</a>");
-                    rest = after_tag[4..];
-                }
-            }
-        }
-    }
-
-    return out.toOwnedSlice(allocator);
-}
-
 // ---------------------------------------------------------------------------
 // Image processing
 // ---------------------------------------------------------------------------
@@ -347,53 +240,182 @@ fn copyImageFile(
     cache.recordAsset(abs_src) catch {};
 }
 
-/// Scan rendered HTML for `<img src="...">` elements; copy any relative-path
-/// images into `out_dir/assets/` and rewrite their src to `{prefix}/assets/…`.
-pub fn processImages(
+// ---------------------------------------------------------------------------
+// Combined attribute rewrite: images + internal links
+// ---------------------------------------------------------------------------
+
+/// Context needed to copy and rewrite relative `<img src="...">` paths.
+/// Pass `null` for `image_ctx` to `rewriteAttributes` to skip image handling
+/// entirely — content with no natural conf-relative base path for images
+/// (API doc comments, literate example prose) has nothing meaningful to
+/// resolve a relative image path against.
+pub const ImageContext = struct {
     io: std.Io,
-    allocator: std.mem.Allocator,
-    html: []const u8,
     conf_dir: []const u8,
     out_dir: std.Io.Dir,
-    prefix: []const u8,
     cache: *cache_mod.Cache,
+};
+
+const AttrMarker = enum { src, sym, mod, guide, page };
+
+/// Single-pass rewrite of `src="..."` (relative image paths, when
+/// `image_ctx` is given) and `href="sym:|mod:|page:|guide:..."` (internal
+/// link schemes produced by the markdown parser) attributes.
+///
+/// These used to be two separate full-buffer passes (`processImages` then
+/// `resolveInternalLinks`). Merging them into one scan is safe because they
+/// rewrite disjoint attribute names — neither pass's replacement text can
+/// ever create a trigger for the other, so scanning for whichever marker
+/// comes first and handling it inline produces the same result as running
+/// them sequentially.
+///
+/// Supported internal-link syntax in page markdown:
+///   `[text](sym:Name)`             → any public symbol (searched across all modules)
+///   `[text](sym:module.Name)`      → symbol qualified by module name
+///   `[text](sym:Container.method)` → method anchor (when first part is not a module)
+///   `[text](mod:name)`             → module API page (`api/name.html`)
+///   `[text](page:slug)`            → another page (`page/slug.html`)
+///   `[text](guide:slug)`           → another page, backward-compat alias for `page:slug`
+pub fn rewriteAttributes(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    mods: []const symbols.Module,
+    prefix: []const u8,
+    image_ctx: ?ImageContext,
 ) ![]const u8 {
-    const marker = "src=\"";
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var rest = html;
     while (true) {
-        const pos = std.mem.indexOf(u8, rest, marker) orelse {
+        const src_pos = if (image_ctx != null) std.mem.indexOf(u8, rest, "src=\"") else null;
+        const sym_pos = std.mem.indexOf(u8, rest, "href=\"sym:");
+        const mod_pos = std.mem.indexOf(u8, rest, "href=\"mod:");
+        const guide_pos = std.mem.indexOf(u8, rest, "href=\"guide:");
+        const page_pos = std.mem.indexOf(u8, rest, "href=\"page:");
+
+        // Pick the earliest marker.
+        var fp: usize = std.math.maxInt(usize);
+        var marker: AttrMarker = undefined;
+        if (src_pos) |p| if (p < fp) {
+            fp = p;
+            marker = .src;
+        };
+        if (sym_pos) |p| if (p < fp) {
+            fp = p;
+            marker = .sym;
+        };
+        if (mod_pos) |p| if (p < fp) {
+            fp = p;
+            marker = .mod;
+        };
+        if (guide_pos) |p| if (p < fp) {
+            fp = p;
+            marker = .guide;
+        };
+        if (page_pos) |p| if (p < fp) {
+            fp = p;
+            marker = .page;
+        };
+        if (fp == std.math.maxInt(usize)) {
             try out.appendSlice(allocator, rest);
             break;
+        }
+
+        try out.appendSlice(allocator, rest[0..fp]);
+
+        const marker_str: []const u8 = switch (marker) {
+            .src => "src=\"",
+            .sym => "href=\"sym:",
+            .mod => "href=\"mod:",
+            .guide => "href=\"guide:",
+            .page => "href=\"page:",
         };
 
-        try out.appendSlice(allocator, rest[0..pos]);
-
-        const after = rest[pos + marker.len ..];
+        const after = rest[fp + marker_str.len ..];
         const close = std.mem.indexOfScalar(u8, after, '"') orelse {
-            try out.appendSlice(allocator, marker);
+            try out.appendSlice(allocator, marker_str);
             rest = after;
             continue;
         };
-
-        const src = after[0..close];
-        if (isRelativeUrl(src)) {
-            copyImageFile(io, allocator, conf_dir, src, out_dir, cache) catch |err| {
-                std.debug.print("Warning: could not copy image '{s}': {}\n", .{ src, err });
-            };
-            const img_src = try std.fmt.allocPrint(allocator, "src=\"{s}/assets/{s}", .{ prefix, src });
-            defer allocator.free(img_src);
-            try out.appendSlice(allocator, img_src);
-        } else {
-            try out.appendSlice(allocator, marker);
-            try out.appendSlice(allocator, src);
-        }
-
-        // after[close..] starts with the closing `"` — preserved on next pass.
+        const value = after[0..close];
         rest = after[close..];
+
+        switch (marker) {
+            .src => {
+                const ictx = image_ctx.?;
+                if (isRelativeUrl(value)) {
+                    copyImageFile(ictx.io, allocator, ictx.conf_dir, value, ictx.out_dir, ictx.cache) catch |err| {
+                        std.debug.print("Warning: could not copy image '{s}': {}\n", .{ value, err });
+                    };
+                    const img_src = try std.fmt.allocPrint(allocator, "src=\"{s}/assets/{s}", .{ prefix, value });
+                    defer allocator.free(img_src);
+                    try out.appendSlice(allocator, img_src);
+                } else {
+                    try out.appendSlice(allocator, marker_str);
+                    try out.appendSlice(allocator, value);
+                }
+            },
+            .sym => {
+                if (findSymbolRef(mods, value)) |ref| {
+                    if (ref.container) |cont| {
+                        const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html#sym-{s}-{s}", .{ prefix, ref.module_name, cont, ref.name });
+                        defer allocator.free(lnk);
+                        try out.appendSlice(allocator, lnk);
+                    } else {
+                        const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html#sym-{s}", .{ prefix, ref.module_name, ref.name });
+                        defer allocator.free(lnk);
+                        try out.appendSlice(allocator, lnk);
+                    }
+                } else {
+                    const lnk = try std.fmt.allocPrint(allocator, "href=\"#sym-{s}", .{value});
+                    defer allocator.free(lnk);
+                    try out.appendSlice(allocator, lnk);
+                }
+
+                // For sym: links with no explicit link text, inject `<code>name</code>`
+                // so that `[](sym:Foo)` renders as [`Foo`](...) rather than a blank link.
+                if (std.mem.indexOf(u8, rest, ">")) |tag_end| {
+                    const after_tag = rest[tag_end + 1 ..];
+                    if (std.mem.startsWith(u8, after_tag, "</a>")) {
+                        const display_name = if (std.mem.lastIndexOfScalar(u8, value, '.')) |dot|
+                            value[dot + 1 ..]
+                        else
+                            value;
+                        try out.appendSlice(allocator, rest[0 .. tag_end + 1]);
+                        const code_tag = try std.fmt.allocPrint(allocator, "<code>{s}</code>", .{display_name});
+                        defer allocator.free(code_tag);
+                        try out.appendSlice(allocator, code_tag);
+                        try out.appendSlice(allocator, "</a>");
+                        rest = after_tag[4..];
+                    }
+                }
+            },
+            .mod => {
+                const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html", .{ prefix, value });
+                defer allocator.free(lnk);
+                try out.appendSlice(allocator, lnk);
+            },
+            .guide, .page => {
+                // guide: (backward compat) or page:
+                const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/page/{s}.html", .{ prefix, value });
+                defer allocator.free(lnk);
+                try out.appendSlice(allocator, lnk);
+            },
+        }
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+/// Convenience wrapper for callers with no relative-image base path (API doc
+/// comments, literate example prose) — resolves internal link schemes only.
+/// See `rewriteAttributes` for supported link syntax.
+pub fn resolveInternalLinks(
+    allocator: std.mem.Allocator,
+    html: []const u8,
+    mods: []const symbols.Module,
+    prefix: []const u8,
+) ![]const u8 {
+    return rewriteAttributes(allocator, html, mods, prefix, null);
 }

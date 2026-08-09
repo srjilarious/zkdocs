@@ -86,7 +86,16 @@ pub fn writeDoc(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
     defer buf.alloc.free(raw);
     const with_emoji = try emoji.replaceInHtml(buf.alloc, raw, ctx.emoji_provider);
     defer buf.alloc.free(with_emoji);
-    const html = try html_transform.linkCodeSymbols(buf.alloc, with_emoji, &ctx.type_index, current_module);
+    // linkCodeSymbols must run before resolveInternalLinks: it scans for bare
+    // `<code>` spans, and resolveInternalLinks can inject its own `<code>`
+    // wrapper into an `<a>` it just resolved (for `[](sym:Foo)` with no link
+    // text) — running code-linking first means it never sees that generated
+    // span and re-wraps it in a second, nested `<a>`.
+    const code_linked = try html_transform.linkCodeSymbols(buf.alloc, with_emoji, &ctx.type_index, current_module);
+    defer buf.alloc.free(code_linked);
+    // API pages always live one directory below the site root (`api/<module>.html`),
+    // so the prefix is always "..".
+    const html = try html_transform.resolveInternalLinks(buf.alloc, code_linked, ctx.mods, "..");
     defer buf.alloc.free(html);
     try buf.writeAll("<div class=\"symbol-doc\">");
     try buf.writeAll(html);
@@ -662,12 +671,11 @@ pub fn renderMarkdownPage(
     defer allocator.free(raw);
     const with_emoji = try emoji.replaceInHtml(allocator, raw, ctx.emoji_provider);
     defer allocator.free(with_emoji);
-    const with_images = if (ctx.conf_dir) |cd|
-        try html_transform.processImages(io, allocator, with_emoji, cd, out_dir.*, prefix, ctx.cache)
+    const image_ctx: ?html_transform.ImageContext = if (ctx.conf_dir) |cd|
+        .{ .io = io, .conf_dir = cd, .out_dir = out_dir.*, .cache = ctx.cache }
     else
-        try allocator.dupe(u8, with_emoji);
-    defer allocator.free(with_images);
-    const html = try html_transform.resolveInternalLinks(allocator, with_images, ctx.mods, prefix);
+        null;
+    const html = try html_transform.rewriteAttributes(allocator, with_emoji, ctx.mods, prefix, image_ctx);
     defer allocator.free(html);
 
     try buf.writeAll("<div class=\"guide-content\">\n");
@@ -704,7 +712,9 @@ fn renderExampleSegments(buf: *Buf, ctx: *const SiteContext, segments: []const e
             .prose => {
                 const raw = try markdown.toHtml(allocator, seg.text);
                 defer allocator.free(raw);
-                const html = try html_transform.resolveInternalLinks(allocator, raw, ctx.mods, prefix);
+                const with_emoji = try emoji.replaceInHtml(allocator, raw, ctx.emoji_provider);
+                defer allocator.free(with_emoji);
+                const html = try html_transform.resolveInternalLinks(allocator, with_emoji, ctx.mods, prefix);
                 defer allocator.free(html);
                 if (seg.indent > 0) {
                     try buf.print("<div class=\"example-prose\" style=\"margin-left:{d}ch\">\n", .{seg.indent});

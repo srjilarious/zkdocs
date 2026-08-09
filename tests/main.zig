@@ -833,6 +833,172 @@ const RenderSiteTests = struct {
         try testz.expectTrue(std.mem.indexOf(u8, toc, "Another Real Heading") != null);
         try testz.expectTrue(std.mem.indexOf(u8, toc, "Fake Heading") == null);
     }
+
+    /// `writeDoc` (used for every `///`/`//!` doc comment on API pages) only
+    /// ran emoji replacement and code-symbol autolinking — it never called
+    /// resolveInternalLinks, so a `[text](sym:Name)` link written in a doc
+    /// comment silently stayed as a broken `href="sym:Name"` forever. Guards
+    /// the fix: doc-comment sym: links must resolve the same as they do in
+    /// guide pages.
+    pub fn docCommentSymLinkIsResolved() !void {
+        const gpa = std.heap.page_allocator;
+
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "doc_links.zig");
+        defer symbols.deinitModules(gpa, mods);
+
+        var progress = render.Progress.init(10);
+        var cache = render.cache_mod.Cache.init(g_Io, gpa);
+        defer cache.deinit();
+
+        const out_dir = "test_tmp_render_doc_sym_link";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, out_dir) catch {};
+
+        try render.renderSite(g_Io, gpa, .{
+            .out_path = out_dir,
+            .project_name = "Test",
+            .mods = mods,
+            .pages = &.{},
+            .emoji_provider = .unicode,
+            .theme = .default,
+            .progress = &progress,
+            .conf_dir = null,
+            .home_slug = null,
+            .cache = &cache,
+            .conf_abs_path = null,
+            .show_imports = false,
+            .repo_url = null,
+        });
+
+        const page_path = try std.fmt.allocPrint(gpa, "{s}/api/doc_links.html", .{out_dir});
+        defer gpa.free(page_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(g_Io, page_path, gpa, .limited(64 * 1024));
+        defer gpa.free(content);
+
+        try testz.expectTrue(std.mem.indexOf(u8, content, "href=\"../api/doc_links.html#sym-bar\"") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, content, "href=\"sym:bar\"") == null);
+    }
+
+    /// Literate example-page prose ran `resolveInternalLinks` but never
+    /// emoji replacement, unlike guide pages and doc comments. Guards the
+    /// fix: a `:emoji:` shortcode in example prose must resolve too.
+    pub fn examplePageProseSupportsEmoji() !void {
+        const gpa = std.heap.page_allocator;
+
+        var items: [1]render.PageNavItem = .{.{ .entry = .{
+            .slug = "emoji-example",
+            .title = "Emoji Example",
+            .content =
+            \\//* Hello :smile: world
+            \\pub fn foo() void {}
+            ,
+            .src_path = "sample.zig",
+            .mode = .zig_prose,
+        } }};
+
+        var progress = render.Progress.init(10);
+        var cache = render.cache_mod.Cache.init(g_Io, gpa);
+        defer cache.deinit();
+
+        const out_dir = "test_tmp_render_example_emoji";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, out_dir) catch {};
+
+        try render.renderSite(g_Io, gpa, .{
+            .out_path = out_dir,
+            .project_name = "Test",
+            .mods = &.{},
+            .pages = &items,
+            .emoji_provider = .unicode,
+            .theme = .default,
+            .progress = &progress,
+            .conf_dir = null,
+            .home_slug = null,
+            .cache = &cache,
+            .conf_abs_path = null,
+            .show_imports = false,
+            .repo_url = null,
+        });
+
+        const page_path = try std.fmt.allocPrint(gpa, "{s}/page/emoji-example.html", .{out_dir});
+        defer gpa.free(page_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(g_Io, page_path, gpa, .limited(64 * 1024));
+        defer gpa.free(content);
+
+        // Scope the check to the rendered prose div — the page also has a
+        // (CSS-hidden) "Raw view" pane showing the literal, unprocessed Zig
+        // source, which legitimately still contains the literal ":smile:"
+        // comment text since that pane is meant to show the source as-is.
+        const prose_start = std.mem.indexOf(u8, content, "class=\"example-prose\"") orelse return error.NoProseDiv;
+        const prose_end = std.mem.indexOf(u8, content[prose_start..], "</div>") orelse return error.NoProseDivEnd;
+        const prose = content[prose_start .. prose_start + prose_end];
+
+        try testz.expectTrue(std.mem.indexOf(u8, prose, ":smile:") == null);
+        try testz.expectTrue(std.mem.indexOf(u8, prose, "\u{1F604}") != null);
+    }
+
+    /// `processImages` and `resolveInternalLinks` used to be two separate
+    /// full-buffer passes; they're now one combined scan (`rewriteAttributes`)
+    /// over the same HTML. A page with both a relative image and a sym: link
+    /// guards that merging them didn't break either — each must still resolve
+    /// correctly regardless of which one appears first in the markup.
+    pub fn combinedImageAndLinkRewriteBothResolve() !void {
+        const gpa = std.heap.page_allocator;
+        const conf_dir = "test_tmp_render_combined_conf";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, conf_dir) catch {};
+        try std.Io.Dir.cwd().createDirPath(g_Io, conf_dir);
+        {
+            const f = try std.Io.Dir.cwd().createFile(g_Io, conf_dir ++ "/logo.png", .{});
+            defer f.close(g_Io);
+            try f.writeStreamingAll(g_Io, "not a real png, just needs to exist");
+        }
+
+        const mods = try symbols.extractModuleGraph(g_Io, gpa, "doc_links.zig");
+        defer symbols.deinitModules(gpa, mods);
+
+        var items: [1]render.PageNavItem = .{.{ .entry = .{
+            .slug = "combined",
+            .title = "Combined",
+            .content = "# Combined\n\n![logo](logo.png)\n\nSee [bar](sym:bar) too.",
+            .src_path = "sample.zig",
+            .mode = .markdown,
+        } }};
+
+        var progress = render.Progress.init(10);
+        var cache = render.cache_mod.Cache.init(g_Io, gpa);
+        defer cache.deinit();
+
+        const out_dir = "test_tmp_render_combined_out";
+        defer std.Io.Dir.cwd().deleteTree(g_Io, out_dir) catch {};
+
+        try render.renderSite(g_Io, gpa, .{
+            .out_path = out_dir,
+            .project_name = "Test",
+            .mods = mods,
+            .pages = &items,
+            .emoji_provider = .unicode,
+            .theme = .default,
+            .progress = &progress,
+            .conf_dir = conf_dir,
+            .home_slug = null,
+            .cache = &cache,
+            .conf_abs_path = null,
+            .show_imports = false,
+            .repo_url = null,
+        });
+
+        const page_path = try std.fmt.allocPrint(gpa, "{s}/page/combined.html", .{out_dir});
+        defer gpa.free(page_path);
+        const content = try std.Io.Dir.cwd().readFileAlloc(g_Io, page_path, gpa, .limited(64 * 1024));
+        defer gpa.free(content);
+
+        try testz.expectTrue(std.mem.indexOf(u8, content, "src=\"../assets/logo.png\"") != null);
+        try testz.expectTrue(std.mem.indexOf(u8, content, "href=\"../api/doc_links.html#sym-bar\"") != null);
+
+        const copied_path = try std.fmt.allocPrint(gpa, "{s}/assets/logo.png", .{out_dir});
+        defer gpa.free(copied_path);
+        const copied = try std.Io.Dir.cwd().readFileAlloc(g_Io, copied_path, gpa, .limited(1024));
+        defer gpa.free(copied);
+        try testz.expectEqualStr(copied, "not a real png, just needs to exist");
+    }
 };
 
 //* These tests exercise the on-disk build cache directly: a save/load round
