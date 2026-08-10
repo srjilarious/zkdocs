@@ -3,6 +3,7 @@ pub const symbols = @import("./symbols.zig");
 pub const render = @import("./render.zig");
 pub const markdown = @import("./markdown.zig");
 pub const example = @import("./example.zig");
+pub const zmd = @import("./zmd/zmd.zig");
 
 const zargs = @import("zargunaught");
 pub const emoji = @import("./emoji.zig");
