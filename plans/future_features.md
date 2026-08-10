@@ -207,6 +207,24 @@ When multiple versions of docs exist, search engines need a canonical.
 
 ---
 
+## 10. Terminal / CLI Output Mode
+
+Static HTML isn't always the fastest way to check "what does this function take again?" while heads-down in a terminal. zkdocs already has the hard part (symbol extraction, doc-comment markdown) — a terminal renderer is mostly a new `Formatters`-style backend, not a new pipeline.
+
+### 10.1 `zkdocs show <symbol>` / `--dump` Command
+- Reuse `symbols.extractModuleGraph` as-is; add a terminal-formatting backend as an alternative to `render.zig`'s HTML rendering (bold/italic via ANSI escapes, code spans dimmed, headings bolded — conceptually the same override mechanism `markdown.zig` already uses for zmd's `Formatters`, just targeting a different output)
+- `zkdocs show MyStruct` prints that symbol's signature, doc comment, and (for containers) its fields/methods directly to stdout
+- `zkdocs --dump` with no symbol prints the full project's API tree, for piping into `grep`/`less`
+
+### 10.2 Shell Autocomplete
+- `zkdocs --generate-completion=bash|zsh|fish` emits a completion script that knows the current project's real module/symbol names (extracted the same way `--dump` does), so `zkdocs show <TAB>` completes to actual symbols, not just static flag names
+- Ties into zargunaught's existing arg-parsing; the dynamic part (symbol names) needs its own completion function per shell
+
+### 10.3 Pager Integration
+- When stdout is a TTY and output exceeds one screen, pipe through `$PAGER` (falling back to `less`), mirroring `git help`/`man` — avoids scrollback spam for a whole-project `--dump`
+
+---
+
 ## Priority Summary
 
 | Feature | Impact | Effort | Priority |
@@ -219,6 +237,7 @@ When multiple versions of docs exist, search engines need a canonical.
 | `comptime` parameter annotation | Medium | Medium | **P2** |
 | Collapsible symbol sections | Medium | Low | **P2** |
 | Previous / next page links | Medium | Low | **P2** |
+| Terminal / CLI output mode (`zkdocs show`) | Medium | Medium | **P2** |
 | `extern` / C interop badges | Low | Low | **P3** |
 | `test` block listing | Low | Low | **P3** |
 | Version switcher | Low | Medium | **P3** |
