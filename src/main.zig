@@ -4,6 +4,8 @@ pub const render = @import("./render.zig");
 pub const markdown = @import("./markdown.zig");
 pub const example = @import("./example.zig");
 pub const zmd = @import("./zmd/zmd.zig");
+pub const show = @import("./show.zig");
+pub const term_render = @import("./term_render.zig");
 
 const zargs = @import("zargunaught");
 pub const emoji = @import("./emoji.zig");
@@ -54,6 +56,11 @@ pub fn main(init: std.process.Init) !void {
                 .maxNumParams = 1,
             },
             .{
+                .longName = "dump",
+                .shortName = "d",
+                .description = "Dump the full extracted symbol tree to stdout (for piping into grep/less).",
+            },
+            .{
                 .longName = "version",
                 .shortName = "v",
                 .description = "Print the zkdocs version and exit.",
@@ -62,6 +69,12 @@ pub fn main(init: std.process.Init) !void {
                 .longName = "help",
                 .shortName = "h",
                 .description = "Print help information.",
+            },
+        },
+        .commands = &.{
+            .{
+                .name = "show",
+                .description = "Print a symbol's signature and doc comment to stdout: `zkdocs show <symbol>`.",
             },
         },
     });
@@ -122,7 +135,59 @@ pub fn main(init: std.process.Init) !void {
         break :blk emoji.Provider.unicode;
     };
 
-    if (args.optionVal("out")) |out_path| {
+    const is_show_cmd = if (args.command) |cmd| std.mem.eql(u8, cmd.name, "show") else false;
+    const is_dump = args.hasOption("dump");
+    const out_path = args.optionVal("out");
+
+    const mode_count: u8 =
+        @as(u8, if (is_show_cmd) 1 else 0) +
+        @as(u8, if (is_dump) 1 else 0) +
+        @as(u8, if (out_path != null) 1 else 0);
+    if (mode_count > 1) {
+        std.debug.print("Error: pass only one of `show`, --dump, or --out.\n", .{});
+        std.process.exit(1);
+    }
+
+    if (is_show_cmd or is_dump) {
+        if (is_show_cmd and args.positional.items.len != 1) {
+            std.debug.print("Usage: zkdocs show <symbol>\n", .{});
+            std.process.exit(1);
+        }
+
+        const rp = root_path orelse {
+            std.debug.print("Error: no root source file given (use --root, or a conf with sources).\n", .{});
+            std.process.exit(1);
+        };
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const aa = arena.allocator();
+
+        const modules = symbols.extractModuleGraph(init.io, aa, rp) catch |err| {
+            std.debug.print("Error extracting symbols from '{s}': {}\n", .{ rp, err });
+            std.process.exit(1);
+        };
+
+        var stdout = try zargs.print.Printer.stdout(allocator);
+        defer stdout.deinit();
+        const color = stdout.supportsColor();
+
+        if (is_show_cmd) {
+            const symbol_name = args.positional.items[0];
+            const found = try show.printShow(&stdout, aa, modules, symbol_name, color);
+            try stdout.flush();
+            if (!found) {
+                std.debug.print("No symbol named '{s}' found.\n", .{symbol_name});
+                std.process.exit(1);
+            }
+        } else {
+            try show.printDump(&stdout, aa, modules, color);
+            try stdout.flush();
+        }
+        return;
+    }
+
+    if (out_path) |op| {
         const pages: []render.PageNavItem =
             if (site_conf) |*sc| sc.pages else &.{};
 
@@ -134,7 +199,7 @@ pub fn main(init: std.process.Init) !void {
         var progress = render.Progress.init(total_steps);
 
         // Load the incremental build cache (returns empty cache on first run).
-        var build_cache = cache_mod.Cache.load(init.io, allocator, out_path);
+        var build_cache = cache_mod.Cache.load(init.io, allocator, op);
         defer build_cache.deinit();
 
         // Resolve the conf file path to absolute for stable cache keys.
@@ -155,7 +220,7 @@ pub fn main(init: std.process.Init) !void {
         const show_imports = if (site_conf) |sc| sc.show_imports else false;
         const repo_url: ?[]const u8 = if (site_conf) |sc| sc.repo else null;
         try render.renderSite(init.io, allocator, .{
-            .out_path = out_path,
+            .out_path = op,
             .project_name = project_name,
             .mods = modules,
             .pages = pages,
@@ -170,73 +235,9 @@ pub fn main(init: std.process.Init) !void {
             .repo_url = repo_url,
         });
     } else {
-        const modules: []symbols.Module = if (root_path) |rp|
-            try symbols.extractModuleGraph(init.io, allocator, rp)
-        else
-            &.{};
-        defer if (root_path != null) symbols.deinitModules(allocator, modules);
-        for (modules) |mod| {
-            std.debug.print("=== module '{s}' ===\n    path: {s}\n", .{ mod.name, mod.path });
-            printSymbols(mod.symbols.items, 1);
-            std.debug.print("\n", .{});
-        }
+        std.debug.print("Nothing to do: pass --out to build a site, --dump to print the symbol tree, or `show <symbol>` to print one symbol.\n", .{});
+        std.debug.print("Run `zkdocs --help` for usage.\n", .{});
+        std.process.exit(1);
     }
 }
 
-fn printDoc(pfx: []const u8, extra: []const u8, doc: []const u8) void {
-    var rest = doc;
-    while (rest.len > 0) {
-        const pos = std.mem.indexOfScalar(u8, rest, '\n');
-        const line = if (pos) |p| rest[0..p] else rest;
-        rest = if (pos) |p| rest[p + 1 ..] else "";
-        std.debug.print("{s}{s}// {s}\n", .{ pfx, extra, line });
-    }
-}
-
-fn printSymbols(syms: []const symbols.Symbol, depth: usize) void {
-    var buf: [32]u8 = undefined;
-    const pfx = buf[0..@min(depth * 2, buf.len)];
-    @memset(pfx, ' ');
-
-    for (syms) |sym| {
-        switch (sym) {
-            .function => |f| {
-                if (f.doc) |d| printDoc(pfx, "", d);
-                std.debug.print("{s}fn {s}(", .{ pfx, f.name });
-                for (f.params, 0..) |p, i| {
-                    if (i > 0) std.debug.print(", ", .{});
-                    if (p.name) |n| std.debug.print("{s}: ", .{n});
-                    std.debug.print("{s}", .{p.type_src});
-                }
-                std.debug.print(")", .{});
-                if (f.return_type_src) |r| std.debug.print(" {s}", .{r});
-                if (f.is_pub) std.debug.print("  [pub]", .{});
-                std.debug.print("\n", .{});
-            },
-            .variable => |v| {
-                if (v.doc) |d| printDoc(pfx, "", d);
-                std.debug.print("{s}const {s}", .{ pfx, v.name });
-                if (v.type_src) |t| std.debug.print(": {s}", .{t});
-                if (v.is_pub) std.debug.print("  [pub]", .{});
-                std.debug.print("\n", .{});
-            },
-            .container => |c| {
-                if (c.doc) |d| printDoc(pfx, "", d);
-                std.debug.print("{s}{s} {s}", .{ pfx, @tagName(c.kind), c.name });
-                if (c.is_pub) std.debug.print("  [pub]", .{});
-                std.debug.print("\n", .{});
-                for (c.fields) |f| {
-                    if (f.doc) |d| printDoc(pfx, "  ", d);
-                    std.debug.print("{s}  .{s}", .{ pfx, f.name });
-                    if (f.type_src) |t| std.debug.print(": {s}", .{t});
-                    std.debug.print("\n", .{});
-                }
-                if (c.decls.items.len > 0) {
-                    std.debug.print("{s}  --- decls ---\n", .{pfx});
-                    printSymbols(c.decls.items, depth + 1);
-                }
-            },
-            .@"test", .other => {},
-        }
-    }
-}
