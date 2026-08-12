@@ -101,6 +101,9 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    const is_show_cmd = if (args.command) |cmd| std.mem.eql(u8, cmd.name, "show") else false;
+    const is_dump = args.hasOption("dump");
+
     // -- Load full project config from --conf if provided --------------------
     var site_conf: ?render.SiteConf = null;
     defer if (site_conf) |*sc| sc.deinit(allocator);
@@ -110,6 +113,14 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Error: could not parse '{s}': {}\n", .{ conf_path, err });
             std.process.exit(1);
         };
+    } else if ((is_show_cmd or is_dump) and args.optionVal("root") == null) {
+        // `show`/`--dump` fall back to a `zkdocs.conf` in the current
+        // directory when neither --conf nor --root was given, so they can
+        // be run from a project root the same way `zig build docs` is
+        // configured. Best-effort: silently skip if it's missing or
+        // malformed and fall through to the "no root source file" error
+        // below, since the user never asked for this file explicitly.
+        site_conf = render.loadSiteConf(init.io, allocator, "zkdocs.conf") catch null;
     }
 
     // -- Resolve settings: CLI flags override config values -------------------
@@ -135,8 +146,6 @@ pub fn main(init: std.process.Init) !void {
         break :blk emoji.Provider.unicode;
     };
 
-    const is_show_cmd = if (args.command) |cmd| std.mem.eql(u8, cmd.name, "show") else false;
-    const is_dump = args.hasOption("dump");
     const out_path = args.optionVal("out");
 
     const mode_count: u8 =

@@ -1,7 +1,9 @@
 //! Terminal output for `zkdocs show <symbol>` and `zkdocs --dump`
-//! (plans/future_features.md §10.1): finds symbols by bare name across all
-//! modules and nested container decls, and prints signatures, doc comments,
-//! and (for containers) fields/decls to a zargunaught `Printer`.
+//! (plans/future_features.md §10.1): finds symbols across all modules and
+//! nested container decls by bare name or by a dotted, scoped query
+//! (`MyStruct.init`, or `math.multiply` to qualify by module -- see
+//! `chainMatches`), and prints signatures, doc comments, and (for
+//! containers) fields/decls to a zargunaught `Printer`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zargs = @import("zargunaught");
@@ -26,17 +28,52 @@ fn symbolName(sym: *const symbols.Symbol) ?[]const u8 {
     };
 }
 
+/// Largest supported `module.Container.Nested...symbol` chain for query
+/// matching -- Zig container nesting never gets remotely close to this in
+/// practice, so a fixed buffer avoids allocating on every symbol checked.
+const max_query_chain = 32;
+
+/// True if `query_segs` is a trailing, contiguous match against the
+/// `module.name` / container-breadcrumb / symbol-name chain, e.g. query
+/// `["MyStruct", "init"]` matches a symbol named `init` whose immediate
+/// parent container is `MyStruct`, regardless of module or outer nesting;
+/// query `["init"]` alone matches an `init` anywhere (the pre-existing
+/// bare-name behavior); query `["math", "multiply"]` matches only the
+/// top-level `multiply` in the `math` module, not `sample`'s.
+fn chainMatches(
+    module_name: []const u8,
+    path: []const []const u8,
+    sym_name: []const u8,
+    query_segs: []const []const u8,
+) bool {
+    if (query_segs.len == 0) return false;
+
+    const chain_len = path.len + 2; // + module name + symbol name
+    if (chain_len > max_query_chain or query_segs.len > chain_len) return false;
+
+    var chain: [max_query_chain][]const u8 = undefined;
+    chain[0] = module_name;
+    for (path, 0..) |p, i| chain[1 + i] = p;
+    chain[chain_len - 1] = sym_name;
+
+    const tail = chain[chain_len - query_segs.len .. chain_len];
+    for (tail, query_segs) |c, q| {
+        if (!std.mem.eql(u8, c, q)) return false;
+    }
+    return true;
+}
+
 fn findInSymbols(
     allocator: Allocator,
     module: *const symbols.Module,
     syms: []const symbols.Symbol,
     path: *std.ArrayList([]const u8),
-    name: []const u8,
+    query_segs: []const []const u8,
     out: *std.ArrayList(Match),
 ) !void {
     for (syms) |*sym| {
         if (symbolName(sym)) |sym_name| {
-            if (std.mem.eql(u8, sym_name, name)) {
+            if (chainMatches(module.name, path.items, sym_name, query_segs)) {
                 try out.append(allocator, .{
                     .module = module,
                     .path = try allocator.dupe([]const u8, path.items),
@@ -46,25 +83,33 @@ fn findInSymbols(
         }
         if (sym.* == .container) {
             try path.append(allocator, sym.container.name);
-            try findInSymbols(allocator, module, sym.container.decls.items, path, name, out);
+            try findInSymbols(allocator, module, sym.container.decls.items, path, query_segs, out);
             _ = path.pop();
         }
     }
 }
 
 /// Search every module (top-level symbols and nested container decls) for
-/// symbols named `name`. Returns every match rather than erroring on
-/// ambiguity, since the same name (e.g. `init`) commonly appears on more
-/// than one container -- callers are expected to print each match labeled
-/// with its module/container path so the user can tell them apart.
-pub fn findSymbol(allocator: Allocator, modules: []const symbols.Module, name: []const u8) ![]Match {
+/// symbols matching `query`. A bare name (`init`) matches anywhere; a
+/// dotted, scoped query (`MyStruct.init`, or `math.multiply` to qualify by
+/// module) matches as many trailing segments as given -- see `chainMatches`.
+/// Returns every match rather than erroring on ambiguity, since the same
+/// name commonly appears on more than one container -- callers are expected
+/// to print each match labeled with its module/container path so the user
+/// can tell them apart.
+pub fn findSymbol(allocator: Allocator, modules: []const symbols.Module, query: []const u8) ![]Match {
+    var query_segs: std.ArrayList([]const u8) = .empty;
+    defer query_segs.deinit(allocator);
+    var it = std.mem.splitScalar(u8, query, '.');
+    while (it.next()) |seg| try query_segs.append(allocator, seg);
+
     var out: std.ArrayList(Match) = .empty;
     errdefer out.deinit(allocator);
 
     for (modules) |*mod| {
         var path: std.ArrayList([]const u8) = .empty;
         defer path.deinit(allocator);
-        try findInSymbols(allocator, mod, mod.symbols.items, &path, name, &out);
+        try findInSymbols(allocator, mod, mod.symbols.items, &path, query_segs.items, &out);
     }
 
     return out.toOwnedSlice(allocator);

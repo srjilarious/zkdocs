@@ -16,12 +16,16 @@ zkdocs [options]
 | `--out <dir>` | `-o` | Output directory for the generated HTML site. |
 | `--theme <name>` | `-t` | Color theme: `default`, `monokai`, `vscode-light`, `vscode-dark` (overrides conf). |
 | `--emoji <provider>` | `-e` | Emoji provider: `none`, `unicode` (default), `twemoji`, `noto`, `openmoji` (overrides conf). |
+| `--dump` | `-d` | Print the full extracted symbol tree to stdout (for piping into `grep`/`less`). |
 | `--version` | `-v` | Print the zkdocs version and exit. |
 | `--help` | `-h` | Print help information. |
 
+There's also a `show` command: `zkdocs show <symbol>`.
+
 When `--conf` is given, all settings in the config file are used as defaults.
 Individual flags (`--root`, `--name`, `--theme`, `--emoji`) override the
-corresponding config values.
+corresponding config values. Pass exactly one of `show`, `--dump`, or `--out`
+per invocation.
 
 ## Output Layout
 
@@ -51,11 +55,37 @@ pages are rendered:
 
 Emoji replacement is skipped inside `<code>` and `<pre>` blocks.
 
-## Debug Output
+## Terminal Output: `show` and `--dump`
 
-Omitting `--out` prints extracted symbols to stderr instead of generating HTML,
-which is useful for verifying extraction:
+Instead of generating a site, you can print symbols straight to the
+terminal.
+
+`zkdocs show <symbol>` prints one symbol's signature and doc comment (and,
+for containers, its fields and decls):
 
 ```sh
-zkdocs --root src/root.zig --name MyLib
+zkdocs --root src/root.zig show MyStruct
 ```
+
+A bare name matches anywhere in the module graph, including nested inside
+containers; if more than one symbol shares that name, every match is
+printed, each labeled with its module/container path. A dotted query
+narrows the match to a specific container (`MyStruct.init`) or module
+(`math.multiply`), matching as many trailing path segments as given.
+
+`zkdocs --dump` prints the entire extracted symbol tree, useful for piping
+into `grep`/`less`:
+
+```sh
+zkdocs --root src/root.zig --dump | less
+```
+
+Both fall back to a `zkdocs.conf` in the current directory to find the root
+source file when neither `--conf` nor `--root` is given, so they can be run
+bare from a project root:
+
+```sh
+cd my-project && zkdocs show MyStruct
+```
+
+Color output is automatic on a TTY and disabled when piped.

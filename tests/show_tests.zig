@@ -4,7 +4,9 @@
 //* more than once (e.g. `multiply` is defined both in `sample.zig` and in
 //* the `math.zig` module it imports) -- `findSymbol` is expected to return
 //* every match rather than pick one, since the caller prints each labeled
-//* by its module/container path.
+//* by its module/container path. Also covers dotted, scoped queries
+//* (`Point.zero`, `math.multiply`) that narrow the match to a specific
+//* container or module.
 const std = @import("std");
 const testz = @import("testz");
 const zkdocs = @import("zkdocs");
@@ -74,6 +76,48 @@ pub fn returnsNoMatchesForUnknownName() !void {
     defer symbols.deinitModules(gpa, mods);
 
     const matches = try show.findSymbol(gpa, mods, "ThisSymbolDoesNotExist");
+    defer gpa.free(matches);
+
+    try testz.expectEqual(matches.len, 0);
+}
+
+pub fn scopedContainerQueryMatchesOnlyThatContainer() !void {
+    const gpa = std.heap.page_allocator;
+
+    const mods = try symbols.extractModuleGraph(fix.g_Io, gpa, "sample.zig");
+    defer symbols.deinitModules(gpa, mods);
+
+    // `Wrapper` also has a decl (`err`, unrelated to `Point.zero`), but
+    // `Point.zero` should resolve to exactly the one nested under `Point`.
+    const matches = try show.findSymbol(gpa, mods, "Point.zero");
+    defer gpa.free(matches);
+
+    try testz.expectEqual(matches.len, 1);
+    try testz.expectEqualStr(matches[0].path[0], "Point");
+    try testz.expectEqualStr(matches[0].symbol.function.name, "zero");
+}
+
+pub fn moduleQualifiedQueryDisambiguatesSameName() !void {
+    const gpa = std.heap.page_allocator;
+
+    const mods = try symbols.extractModuleGraph(fix.g_Io, gpa, "sample.zig");
+    defer symbols.deinitModules(gpa, mods);
+
+    const matches = try show.findSymbol(gpa, mods, "math.multiply");
+    defer gpa.free(matches);
+
+    try testz.expectEqual(matches.len, 1);
+    try testz.expectEqualStr(matches[0].module.name, "math");
+}
+
+pub fn mismatchedContainerQualifierMatchesNothing() !void {
+    const gpa = std.heap.page_allocator;
+
+    const mods = try symbols.extractModuleGraph(fix.g_Io, gpa, "sample.zig");
+    defer symbols.deinitModules(gpa, mods);
+
+    // `zero` is nested under `Point`, not `Wrapper`.
+    const matches = try show.findSymbol(gpa, mods, "Wrapper.zero");
     defer gpa.free(matches);
 
     try testz.expectEqual(matches.len, 0);
