@@ -8,6 +8,7 @@ pub const show = @import("./show.zig");
 pub const term_render = @import("./term_render.zig");
 
 const zargs = @import("zargunaught");
+pub const zargunaught = zargs;
 pub const emoji = @import("./emoji.zig");
 const cache_mod = @import("./cache.zig");
 const build_options = @import("build_options");
@@ -59,16 +60,25 @@ pub fn main(init: std.process.Init) !void {
                 .longName = "dump",
                 .shortName = "d",
                 .description = "Dump the full extracted symbol tree to stdout (for piping into grep/less).",
+                .maxNumParams = 0,
+            },
+            .{
+                .longName = "verbose",
+                .shortName = "V",
+                .description = "With `show`/--dump, also print each function's body source, highlighted.",
+                .maxNumParams = 0,
             },
             .{
                 .longName = "version",
                 .shortName = "v",
                 .description = "Print the zkdocs version and exit.",
+                .maxNumParams = 0,
             },
             .{
                 .longName = "help",
                 .shortName = "h",
                 .description = "Print help information.",
+                .maxNumParams = 0,
             },
         },
         .commands = &.{
@@ -180,17 +190,18 @@ pub fn main(init: std.process.Init) !void {
         var stdout = try zargs.print.Printer.stdout(allocator);
         defer stdout.deinit();
         const color = stdout.supportsColor();
+        const verbose = args.hasOption("verbose");
 
         if (is_show_cmd) {
             const symbol_name = args.positional.items[0];
-            const found = try show.printShow(&stdout, aa, modules, symbol_name, color);
+            const found = try show.printShow(&stdout, aa, modules, symbol_name, color, verbose);
             try stdout.flush();
             if (!found) {
                 std.debug.print("No symbol named '{s}' found.\n", .{symbol_name});
                 std.process.exit(1);
             }
         } else {
-            try show.printDump(&stdout, aa, modules, color);
+            try show.printDump(&stdout, aa, modules, color, verbose);
             try stdout.flush();
         }
         return;

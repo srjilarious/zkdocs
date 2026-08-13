@@ -46,3 +46,37 @@ pub fn jsonHighlightWrapsStringsAndNumbers() !void {
     try testz.expectTrue(std.mem.indexOf(u8, html, "hl-string") != null);
     try testz.expectTrue(std.mem.indexOf(u8, html, "hl-number") != null);
 }
+
+pub fn ansiHighlightColorsZigKeywords() !void {
+    const gpa = std.heap.page_allocator;
+
+    const ansi = try highlight.highlightAnsi(gpa, "zig", "pub fn foo() void {}");
+    defer gpa.free(ansi);
+
+    // keyword color code, and no HTML markup at all in the ANSI path.
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "\x1b[35m") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "foo") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "<span") == null);
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "hl-") == null);
+}
+
+pub fn ansiHighlightDoesNotHtmlEscapeStringLiterals() !void {
+    const gpa = std.heap.page_allocator;
+
+    const ansi = try highlight.highlightAnsi(gpa, "zig", "const s = \"<a>\";");
+    defer gpa.free(ansi);
+
+    // Terminal output should never HTML-escape -- the raw text should
+    // survive unmodified inside the color-wrapped string span.
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "<a>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "&lt;") == null);
+}
+
+pub fn ansiUnknownLanguageFallsBackToRawSource() !void {
+    const gpa = std.heap.page_allocator;
+
+    const ansi = try highlight.highlightAnsi(gpa, "python", "<script>alert(1)</script>");
+    defer gpa.free(ansi);
+
+    try testz.expectEqualStr(ansi, "<script>alert(1)</script>");
+}

@@ -3,13 +3,16 @@
 //! nested container decls by bare name or by a dotted, scoped query
 //! (`MyStruct.init`, or `math.multiply` to qualify by module -- see
 //! `chainMatches`), and prints signatures, doc comments, and (for
-//! containers) fields/decls to a zargunaught `Printer`.
+//! containers) fields/decls to a zargunaught `Printer`. A query matching a
+//! module's name dumps that module's whole API instead of a single symbol.
+//! `--verbose` additionally prints a function's body source, highlighted.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zargs = @import("zargunaught");
 const Printer = zargs.print.Printer;
 const symbols = @import("./symbols.zig");
 const term = @import("./term_render.zig");
+const highlight = @import("./highlight.zig");
 
 pub const Match = struct {
     module: *const symbols.Module,
@@ -25,6 +28,16 @@ fn symbolName(sym: *const symbols.Symbol) ?[]const u8 {
         .variable => |v| v.name,
         .container => |c| c.name,
         .@"test", .other => null,
+    };
+}
+
+/// `const foo = @import("./foo.zig");`-style aliases are plumbing, not
+/// meaningful API surface -- excluded from every listing and match so they
+/// don't clutter a module dump or get treated as a "symbol" to show.
+fn isImportConst(sym: *const symbols.Symbol) bool {
+    return switch (sym.*) {
+        .variable => |v| v.is_import,
+        else => false,
     };
 }
 
@@ -72,6 +85,8 @@ fn findInSymbols(
     out: *std.ArrayList(Match),
 ) !void {
     for (syms) |*sym| {
+        if (isImportConst(sym)) continue;
+
         if (symbolName(sym)) |sym_name| {
             if (chainMatches(module.name, path.items, sym_name, query_segs)) {
                 try out.append(allocator, .{
@@ -115,6 +130,15 @@ pub fn findSymbol(allocator: Allocator, modules: []const symbols.Module, query: 
     return out.toOwnedSlice(allocator);
 }
 
+/// Exact match against a module's name (not a symbol inside it) -- used so
+/// `zkdocs show <module>` dumps that module's whole API.
+pub fn findModule(modules: []const symbols.Module, name: []const u8) ?*const symbols.Module {
+    for (modules) |*mod| {
+        if (std.mem.eql(u8, mod.name, name)) return mod;
+    }
+    return null;
+}
+
 // ── Printing ────────────────────────────────────────────────────────────────
 
 fn sc(color: bool, code: []const u8) []const u8 {
@@ -136,6 +160,17 @@ fn printDoc(printer: *const Printer, allocator: Allocator, doc: ?[]const u8, ind
     try printIndented(printer, rendered, indent);
 }
 
+/// Prints a function's body source (`--verbose`), highlighted when `color`.
+fn printFunctionBody(printer: *const Printer, allocator: Allocator, body_src: []const u8, indent: usize, color: bool) !void {
+    if (color) {
+        const highlighted = try highlight.highlightAnsi(allocator, "zig", body_src);
+        defer allocator.free(highlighted);
+        try printIndented(printer, highlighted, indent);
+    } else {
+        try printIndented(printer, body_src, indent);
+    }
+}
+
 fn printFunctionSig(printer: *const Printer, indent: usize, f: symbols.Function, color: bool) !void {
     try printer.printNum(" ", indent);
     try printer.print("{s}fn {s}{s}(", .{ sc(color, term.bold), f.name, sc(color, term.reset) });
@@ -152,9 +187,7 @@ fn printFunctionSig(printer: *const Printer, indent: usize, f: symbols.Function,
 
 fn printVariableSig(printer: *const Printer, indent: usize, v: symbols.Variable, color: bool) !void {
     try printer.printNum(" ", indent);
-    try printer.print("{s}{s} {s}{s}", .{
-        sc(color, term.bold), if (v.is_import) "import" else "const", v.name, sc(color, term.reset),
-    });
+    try printer.print("{s}const {s}{s}", .{ sc(color, term.bold), v.name, sc(color, term.reset) });
     if (v.type_src) |t| try printer.print(": {s}{s}{s}", .{ sc(color, term.green), t, sc(color, term.reset) });
     if (v.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     try printer.print("\n", .{});
@@ -168,12 +201,16 @@ fn printContainerSig(printer: *const Printer, indent: usize, c: symbols.Containe
 }
 
 /// Print one symbol (and, for containers, its fields and nested decls)
-/// starting at `indent` spaces.
-pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const symbols.Symbol, indent: usize, color: bool) !void {
+/// starting at `indent` spaces. `verbose` additionally prints a function's
+/// highlighted body source.
+pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const symbols.Symbol, indent: usize, color: bool, verbose: bool) !void {
     switch (sym.*) {
         .function => |f| {
             try printFunctionSig(printer, indent, f, color);
             try printDoc(printer, allocator, f.doc, indent + 2, color);
+            if (verbose) {
+                if (f.body_src) |body| try printFunctionBody(printer, allocator, body, indent + 2, color);
+            }
         },
         .variable => |v| {
             try printVariableSig(printer, indent, v, color);
@@ -191,43 +228,63 @@ pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const sy
                 try printDoc(printer, allocator, field.doc, indent + 4, color);
             }
 
-            if (c.decls.items.len > 0) {
-                try printer.printNum(" ", indent + 2);
-                try printer.print("{s}--- decls ---{s}\n", .{ sc(color, term.gray), sc(color, term.reset) });
-                for (c.decls.items) |*decl| try printSymbol(printer, allocator, decl, indent + 2, color);
+            const decls = c.decls.items;
+            var printed_header = false;
+            for (decls) |*decl| {
+                if (isImportConst(decl)) continue;
+                if (!printed_header) {
+                    try printer.printNum(" ", indent + 2);
+                    try printer.print("{s}--- decls ---{s}\n", .{ sc(color, term.gray), sc(color, term.reset) });
+                    printed_header = true;
+                }
+                try printSymbol(printer, allocator, decl, indent + 2, color, verbose);
             }
         },
         .@"test", .other => {},
     }
 }
 
-/// Print the entire extracted module graph (`zkdocs --dump`).
-pub fn printDump(printer: *const Printer, allocator: Allocator, modules: []const symbols.Module, color: bool) !void {
-    for (modules) |*mod| {
-        try printer.print("{s}=== module {s} {s}(path: {s}){s}\n", .{
-            sc(color, term.bold), mod.name, sc(color, term.gray), mod.path, sc(color, term.reset),
-        });
-        try printDoc(printer, allocator, mod.doc, 2, color);
-        for (mod.symbols.items) |*sym| try printSymbol(printer, allocator, sym, 1, color);
-        try printer.print("\n", .{});
+/// Print one module's header/doc and every non-import top-level symbol.
+fn printModule(printer: *const Printer, allocator: Allocator, mod: *const symbols.Module, color: bool, verbose: bool) !void {
+    try printer.print("{s}=== module {s} {s}(path: {s}){s}\n", .{
+        sc(color, term.bold), mod.name, sc(color, term.gray), mod.path, sc(color, term.reset),
+    });
+    try printDoc(printer, allocator, mod.doc, 2, color);
+    for (mod.symbols.items) |*sym| {
+        if (isImportConst(sym)) continue;
+        try printSymbol(printer, allocator, sym, 1, color, verbose);
     }
+    try printer.print("\n", .{});
 }
 
-/// Print every symbol matching `name` (`zkdocs show <name>`). Returns
-/// `false` (with nothing printed) when no symbol matches.
-pub fn printShow(printer: *const Printer, allocator: Allocator, modules: []const symbols.Module, name: []const u8, color: bool) !bool {
-    const matches = try findSymbol(allocator, modules, name);
+/// Print the entire extracted module graph (`zkdocs --dump`).
+pub fn printDump(printer: *const Printer, allocator: Allocator, modules: []const symbols.Module, color: bool, verbose: bool) !void {
+    for (modules) |*mod| try printModule(printer, allocator, mod, color, verbose);
+}
+
+/// Print whatever matches `query` (`zkdocs show <query>`): a module whose
+/// name matches `query` exactly is printed as its whole API; any symbols
+/// matching `query` (bare or scoped, see `findSymbol`) are printed after.
+/// Returns `false` (with nothing printed) when neither matches anything.
+pub fn printShow(printer: *const Printer, allocator: Allocator, modules: []const symbols.Module, query: []const u8, color: bool, verbose: bool) !bool {
+    var printed_anything = false;
+
+    if (findModule(modules, query)) |mod| {
+        try printModule(printer, allocator, mod, color, verbose);
+        printed_anything = true;
+    }
+
+    const matches = try findSymbol(allocator, modules, query);
     defer allocator.free(matches);
 
-    if (matches.len == 0) return false;
-
     for (matches, 0..) |m, i| {
-        if (i > 0) try printer.print("\n", .{});
+        if (printed_anything or i > 0) try printer.print("\n", .{});
         try printer.print("{s}{s}", .{ sc(color, term.gray), m.module.name });
         for (m.path) |p| try printer.print(" > {s}", .{p});
         try printer.print("{s}\n", .{sc(color, term.reset)});
-        try printSymbol(printer, allocator, m.symbol, 0, color);
+        try printSymbol(printer, allocator, m.symbol, 0, color, verbose);
+        printed_anything = true;
     }
 
-    return true;
+    return printed_anything;
 }

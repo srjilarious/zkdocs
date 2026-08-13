@@ -17,21 +17,32 @@ const highlights_json =
 const CaptureRange = struct {
     start: u32,
     end: u32,
-    class: []const u8,
+    name: []const u8,
     pattern_index: u16,
 };
 
-/// Highlight source code for the given language fence tag.
+const RenderMode = enum { html, ansi };
+
+/// Highlight source code for the given language fence tag, as HTML spans.
 /// Falls back to plain escaped text for unknown languages.
 pub fn highlight(allocator: std.mem.Allocator, lang: []const u8, source: []const u8) ![]const u8 {
-    if (std.mem.eql(u8, lang, "zig")) return highlightWith(allocator, ts_zig.language(), highlights_zig, source);
-    if (std.mem.eql(u8, lang, "json")) return highlightWith(allocator, ts_json.language(), highlights_json, source);
+    if (std.mem.eql(u8, lang, "zig")) return highlightWith(allocator, ts_zig.language(), highlights_zig, source, .html);
+    if (std.mem.eql(u8, lang, "json")) return highlightWith(allocator, ts_json.language(), highlights_json, source, .html);
     return escapedOnly(allocator, source);
 }
 
 /// Highlight Zig source code (kept for backwards compat with callers).
 pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
-    return highlightWith(allocator, ts_zig.language(), highlights_zig, source);
+    return highlightWith(allocator, ts_zig.language(), highlights_zig, source, .html);
+}
+
+/// Highlight source code for the given language fence tag, as ANSI escape
+/// codes for terminal display (used by `zkdocs show --verbose`). Falls
+/// back to the unmodified source for unknown languages.
+pub fn highlightAnsi(allocator: std.mem.Allocator, lang: []const u8, source: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, lang, "zig")) return highlightWith(allocator, ts_zig.language(), highlights_zig, source, .ansi);
+    if (std.mem.eql(u8, lang, "json")) return highlightWith(allocator, ts_json.language(), highlights_json, source, .ansi);
+    return allocator.dupe(u8, source);
 }
 
 fn highlightWith(
@@ -39,6 +50,7 @@ fn highlightWith(
     grammar: *const anyopaque,
     query_src: []const u8,
     source: []const u8,
+    mode: RenderMode,
 ) ![]const u8 {
     const parser = ts.Parser.create();
     defer parser.destroy();
@@ -47,13 +59,13 @@ fn highlightWith(
     try parser.setLanguage(lang);
 
     const tree = parser.parseString(source, null) orelse {
-        return escapedOnly(allocator, source);
+        return fallback(allocator, source, mode);
     };
     defer tree.destroy();
 
     var error_offset: u32 = 0;
     const query = ts.Query.create(lang, query_src, &error_offset) catch {
-        return escapedOnly(allocator, source);
+        return fallback(allocator, source, mode);
     };
     defer query.destroy();
 
@@ -70,11 +82,10 @@ fn highlightWith(
         if (ci >= m.captures.len) continue;
         const cap = m.captures[ci];
         const name = query.captureNameForId(cap.index) orelse continue;
-        const class = cssClass(name) orelse continue;
         try ranges.append(allocator, .{
             .start = cap.node.startByte(),
             .end = cap.node.endByte(),
-            .class = class,
+            .name = name,
             .pattern_index = m.pattern_index,
         });
     }
@@ -99,16 +110,12 @@ fn highlightWith(
         const next_start: u32 = if (ri < ranges.items.len) ranges.items[ri].start else src_len;
 
         if (next_start > pos) {
-            try appendEscaped(allocator, &out, source[pos..next_start]);
+            try appendPlain(allocator, &out, source[pos..next_start], mode);
             pos = next_start;
         } else if (ri < ranges.items.len) {
             const r = ranges.items[ri];
             ri += 1;
-            try out.appendSlice(allocator, "<span class=\"");
-            try out.appendSlice(allocator, r.class);
-            try out.appendSlice(allocator, "\">");
-            try appendEscaped(allocator, &out, source[r.start..r.end]);
-            try out.appendSlice(allocator, "</span>");
+            try appendStyled(allocator, &out, source[r.start..r.end], r.name, mode);
             pos = r.end;
             while (ri < ranges.items.len and ranges.items[ri].start < pos) ri += 1;
         } else {
@@ -117,6 +124,45 @@ fn highlightWith(
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn fallback(allocator: std.mem.Allocator, source: []const u8, mode: RenderMode) ![]const u8 {
+    return switch (mode) {
+        .html => escapedOnly(allocator, source),
+        .ansi => allocator.dupe(u8, source),
+    };
+}
+
+fn appendPlain(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8, mode: RenderMode) !void {
+    switch (mode) {
+        .html => try appendEscaped(allocator, out, text),
+        .ansi => try out.appendSlice(allocator, text),
+    }
+}
+
+fn appendStyled(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8, capture_name: []const u8, mode: RenderMode) !void {
+    switch (mode) {
+        .html => {
+            if (cssClass(capture_name)) |class| {
+                try out.appendSlice(allocator, "<span class=\"");
+                try out.appendSlice(allocator, class);
+                try out.appendSlice(allocator, "\">");
+                try appendEscaped(allocator, out, text);
+                try out.appendSlice(allocator, "</span>");
+            } else {
+                try appendEscaped(allocator, out, text);
+            }
+        },
+        .ansi => {
+            if (ansiColor(capture_name)) |color| {
+                try out.appendSlice(allocator, color);
+                try out.appendSlice(allocator, text);
+                try out.appendSlice(allocator, "\x1b[0m");
+            } else {
+                try out.appendSlice(allocator, text);
+            }
+        },
+    }
 }
 
 fn escapedOnly(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
@@ -138,6 +184,21 @@ fn cssClass(name: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, name, "comment")) return "hl-comment";
     if (std.mem.eql(u8, name, "operator")) return "hl-operator";
     return null;
+}
+
+// ANSI palette chosen to roughly parallel cssClass's groupings, reusing the
+// same green for `type` that term_render.zig uses for signature types.
+fn ansiColor(name: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, name, "keyword")) return "\x1b[35m"; // magenta
+    if (std.mem.startsWith(u8, name, "function")) return "\x1b[34m"; // blue
+    if (std.mem.startsWith(u8, name, "type")) return "\x1b[32m"; // green
+    if (std.mem.startsWith(u8, name, "constant")) return "\x1b[33m"; // yellow
+    if (std.mem.startsWith(u8, name, "string") or
+        std.mem.eql(u8, name, "character")) return "\x1b[36m"; // cyan
+    if (std.mem.startsWith(u8, name, "number")) return "\x1b[93m"; // bright yellow
+    if (std.mem.eql(u8, name, "boolean")) return "\x1b[33m"; // yellow
+    if (std.mem.startsWith(u8, name, "comment")) return "\x1b[90m"; // gray
+    return null; // operator, etc.: left unstyled
 }
 
 fn appendEscaped(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {

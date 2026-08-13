@@ -17,6 +17,7 @@ zkdocs [options]
 | `--theme <name>` | `-t` | Color theme: `default`, `monokai`, `vscode-light`, `vscode-dark` (overrides conf). |
 | `--emoji <provider>` | `-e` | Emoji provider: `none`, `unicode` (default), `twemoji`, `noto`, `openmoji` (overrides conf). |
 | `--dump` | `-d` | Print the full extracted symbol tree to stdout (for piping into `grep`/`less`). |
+| `--verbose` | `-V` | With `show`/`--dump`, also print each function's body source, highlighted. |
 | `--version` | `-v` | Print the zkdocs version and exit. |
 | `--help` | `-h` | Print help information. |
 
@@ -71,7 +72,12 @@ A bare name matches anywhere in the module graph, including nested inside
 containers; if more than one symbol shares that name, every match is
 printed, each labeled with its module/container path. A dotted query
 narrows the match to a specific container (`MyStruct.init`) or module
-(`math.multiply`), matching as many trailing path segments as given.
+(`math.multiply`), matching as many trailing path segments as given. A
+query matching a module's name instead dumps that module's whole API:
+
+```sh
+zkdocs --root src/root.zig show mymodule
+```
 
 `zkdocs --dump` prints the entire extracted symbol tree, useful for piping
 into `grep`/`less`:
@@ -88,4 +94,10 @@ bare from a project root:
 cd my-project && zkdocs show MyStruct
 ```
 
-Color output is automatic on a TTY and disabled when piped.
+Import aliases (`const foo = @import("./foo.zig");`) are never shown --
+they're plumbing, not API surface.
+
+Color output is automatic on a TTY and disabled when piped. Adding
+`--verbose` also prints each function's body source, highlighted; place it
+before the symbol/query argument (`zkdocs show --verbose MyStruct`, not
+after), since flags after a positional argument aren't recognized.

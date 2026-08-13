@@ -25,6 +25,7 @@ const Tests = testz.discoverTests(.{
     testz.Group{ .name = "Vendored zmd Parser", .tag = "zmd", .mod = @import("zmd_tests.zig") },
     testz.Group{ .name = "Terminal ANSI Rendering", .tag = "term_render", .mod = @import("term_render_tests.zig") },
     testz.Group{ .name = "Show / Symbol Lookup", .tag = "show", .mod = @import("show_tests.zig") },
+    testz.Group{ .name = "Show / Dump Printing", .tag = "show_print", .mod = @import("show_print_tests.zig") },
 }, .{});
 
 pub fn main(init: std.process.Init) !void {
