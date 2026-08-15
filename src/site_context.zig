@@ -50,6 +50,12 @@ pub fn buildTypeIndex(allocator: std.mem.Allocator, mods: []const symbols.Module
                         .anchor_name = f.name,
                     });
                 },
+                .error_set => |e| {
+                    if (e.is_pub) try idx.put(e.name, .{
+                        .module_name = mod.name,
+                        .anchor_name = e.name,
+                    });
+                },
                 .variable, .@"test", .other => {},
             }
         }

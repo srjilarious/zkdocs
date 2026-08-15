@@ -51,6 +51,46 @@ pub fn showOnModuleNameDumpsWholeApi() !void {
     try testz.expectTrue(std.mem.indexOf(u8, out, "fn clamp") != null);
 }
 
+pub fn listSymbolsIncludesModulesAndNestedNamesDeduplicated() !void {
+    const gpa = std.heap.page_allocator;
+
+    const mods = try symbols.extractModuleGraph(fix.g_Io, gpa, "sample.zig");
+    defer symbols.deinitModules(gpa, mods);
+
+    var printer = try zargs.print.Printer.memory(gpa);
+    defer printer.deinit();
+
+    try show.printSymbolNames(&printer, gpa, mods);
+
+    const out = printer.array.writer.written();
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(gpa);
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
+    while (it.next()) |line| try names.append(gpa, line);
+
+    // Module names and top-level symbols are present.
+    try testz.expectTrue(std.mem.indexOf(u8, out, "sample\n") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, out, "math\n") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, out, "add\n") != null);
+    // Names nested inside a container are present too (bare-name match, same
+    // as `findSymbol`).
+    try testz.expectTrue(std.mem.indexOf(u8, out, "zero\n") != null);
+    // `multiply` is defined in both sample.zig and math.zig -- listed once.
+    var occurrences: usize = 0;
+    for (names.items) |n| {
+        if (std.mem.eql(u8, n, "multiply")) occurrences += 1;
+    }
+    try testz.expectEqual(occurrences, 1);
+    // Import-const aliases never appear.
+    try testz.expectTrue(std.mem.indexOf(u8, out, "std\n") == null);
+    // Output is sorted.
+    var sorted = true;
+    for (1..names.items.len) |i| {
+        if (!std.mem.lessThan(u8, names.items[i - 1], names.items[i])) sorted = false;
+    }
+    try testz.expectTrue(sorted);
+}
+
 pub fn verboseIncludesFunctionBodySource() !void {
     const gpa = std.heap.page_allocator;
 

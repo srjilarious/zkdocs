@@ -153,6 +153,7 @@ fn pubSymbolName(sym: symbols.Symbol) ?[]const u8 {
         .function => |f| if (f.is_pub) f.name else null,
         .variable => |v| if (v.is_pub) v.name else null,
         .container => |c| if (c.is_pub) c.name else null,
+        .error_set => |e| if (e.is_pub) e.name else null,
         .@"test", .other => null,
     };
 }

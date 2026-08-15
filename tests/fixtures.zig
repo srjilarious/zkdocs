@@ -20,6 +20,7 @@ pub fn findSymbol(syms: []const symbols.Symbol, kind: symbols.SymbolKind, name: 
             .function => |f| f.name,
             .variable => |v| v.name,
             .container => |c| c.name,
+            .error_set => |e| e.name,
             .@"test", .other => continue,
         };
         if (std.mem.eql(u8, sym_name, name)) return sym;

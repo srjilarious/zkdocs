@@ -6,6 +6,7 @@ pub const example = @import("./example.zig");
 pub const zmd = @import("./zmd/zmd.zig");
 pub const show = @import("./show.zig");
 pub const term_render = @import("./term_render.zig");
+pub const completion = @import("./completion.zig");
 
 const zargs = @import("zargunaught");
 pub const zargunaught = zargs;
@@ -63,6 +64,16 @@ pub fn main(init: std.process.Init) !void {
                 .maxNumParams = 0,
             },
             .{
+                .longName = "list-symbols",
+                .description = "Print all documented module/symbol names, one per line (used by shell completion).",
+                .maxNumParams = 0,
+            },
+            .{
+                .longName = "generate-completion",
+                .description = "Print a shell completion script (bash, zsh, or fish) to stdout and exit.",
+                .maxNumParams = 1,
+            },
+            .{
                 .longName = "verbose",
                 .shortName = "V",
                 .description = "With `show`/--dump, also print each function's body source, highlighted.",
@@ -101,6 +112,18 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (args.optionVal("generate-completion")) |shell_str| {
+        const shell = completion.Shell.fromStr(shell_str) orelse {
+            std.debug.print("Error: unknown shell '{s}' (expected bash, zsh, or fish).\n", .{shell_str});
+            std.process.exit(1);
+        };
+        var stdout = try zargs.print.Printer.stdout(allocator);
+        defer stdout.deinit();
+        try completion.printScript(&stdout, shell);
+        try stdout.flush();
+        return;
+    }
+
     if (args.hasOption("help")) {
         var stdout = try zargs.print.Printer.stdout(allocator);
         defer stdout.deinit();
@@ -113,6 +136,7 @@ pub fn main(init: std.process.Init) !void {
 
     const is_show_cmd = if (args.command) |cmd| std.mem.eql(u8, cmd.name, "show") else false;
     const is_dump = args.hasOption("dump");
+    const is_list_symbols = args.hasOption("list-symbols");
 
     // -- Load full project config from --conf if provided --------------------
     var site_conf: ?render.SiteConf = null;
@@ -123,12 +147,12 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("Error: could not parse '{s}': {}\n", .{ conf_path, err });
             std.process.exit(1);
         };
-    } else if ((is_show_cmd or is_dump) and args.optionVal("root") == null) {
-        // `show`/`--dump` fall back to a `zkdocs.conf` in the current
-        // directory when neither --conf nor --root was given, so they can
-        // be run from a project root the same way `zig build docs` is
-        // configured. Best-effort: silently skip if it's missing or
-        // malformed and fall through to the "no root source file" error
+    } else if ((is_show_cmd or is_dump or is_list_symbols) and args.optionVal("root") == null) {
+        // `show`/`--dump`/`--list-symbols` fall back to a `zkdocs.conf` in
+        // the current directory when neither --conf nor --root was given,
+        // so they can be run from a project root the same way `zig build
+        // docs` is configured. Best-effort: silently skip if it's missing
+        // or malformed and fall through to the "no root source file" error
         // below, since the user never asked for this file explicitly.
         site_conf = render.loadSiteConf(init.io, allocator, "zkdocs.conf") catch null;
     }
@@ -161,13 +185,14 @@ pub fn main(init: std.process.Init) !void {
     const mode_count: u8 =
         @as(u8, if (is_show_cmd) 1 else 0) +
         @as(u8, if (is_dump) 1 else 0) +
+        @as(u8, if (is_list_symbols) 1 else 0) +
         @as(u8, if (out_path != null) 1 else 0);
     if (mode_count > 1) {
-        std.debug.print("Error: pass only one of `show`, --dump, or --out.\n", .{});
+        std.debug.print("Error: pass only one of `show`, --dump, --list-symbols, or --out.\n", .{});
         std.process.exit(1);
     }
 
-    if (is_show_cmd or is_dump) {
+    if (is_show_cmd or is_dump or is_list_symbols) {
         if (is_show_cmd and args.positional.items.len != 1) {
             std.debug.print("Usage: zkdocs show <symbol>\n", .{});
             std.process.exit(1);
@@ -200,8 +225,11 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("No symbol named '{s}' found.\n", .{symbol_name});
                 std.process.exit(1);
             }
-        } else {
+        } else if (is_dump) {
             try show.printDump(&stdout, aa, modules, color, verbose);
+            try stdout.flush();
+        } else {
+            try show.printSymbolNames(&stdout, aa, modules);
             try stdout.flush();
         }
         return;

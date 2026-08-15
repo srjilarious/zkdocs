@@ -216,6 +216,10 @@ Static HTML isn't always the fastest way to check "what does this function take 
 - `zkdocs show MyStruct` prints that symbol's signature, doc comment, and (for containers) its fields/methods directly to stdout
 - `zkdocs --dump` with no symbol prints the full project's API tree, for piping into `grep`/`less`
 
+#### Not there yet for show
+- Ability to dump an entire module, not just the imports.
+- 
+
 ### 10.2 Shell Autocomplete
 - `zkdocs --generate-completion=bash|zsh|fish` emits a completion script that knows the current project's real module/symbol names (extracted the same way `--dump` does), so `zkdocs show <TAB>` completes to actual symbols, not just static flag names
 - Ties into zargunaught's existing arg-parsing; the dynamic part (symbol names) needs its own completion function per shell

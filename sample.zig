@@ -50,11 +50,31 @@ pub const LogLevel = enum {
     err,
 };
 
-/// A generic result type.
+/// Errors returned by bounds-checked operations.
 pub const Error = error{
+    /// Index was outside the valid range.
     OutOfBounds,
+    /// Input value failed validation.
     InvalidInput,
 };
+
+/// Returns the element at `idx`, or an inferred error if the lookup fails.
+pub fn maybeGet(idx: usize) !i32 {
+    if (idx > 10) return error.OutOfBounds;
+    return @intCast(idx);
+}
+
+/// Looks up `idx`, returning one of `Error`'s named variants on failure.
+pub fn checkedGet(idx: usize) Error!i32 {
+    if (idx > 10) return error.OutOfBounds;
+    return @intCast(idx);
+}
+
+/// Divides `a` by `b`, listing its own error set inline.
+pub fn strictDivide(a: i32, b: i32) error{ DivByZero, Overflow }!i32 {
+    if (b == 0) return error.DivByZero;
+    return @divTrunc(a, b);
+}
 
 /// The default buffer size used by readers.
 pub const default_buf_size: usize = 4096;
@@ -68,6 +88,12 @@ pub const Wrapper = struct {
     value: i64,
     /// Whether the value is valid.
     valid: bool,
+
+    /// Errors that can occur constructing a Wrapper.
+    pub const ConstructError = error{
+        /// The supplied value was negative.
+        Negative,
+    };
 
     /// Constructs a valid wrapper.
     pub fn ok(v: i64) Wrapper {

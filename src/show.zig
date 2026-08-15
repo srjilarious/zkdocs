@@ -1,11 +1,13 @@
-//! Terminal output for `zkdocs show <symbol>` and `zkdocs --dump`
-//! (plans/future_features.md §10.1): finds symbols across all modules and
-//! nested container decls by bare name or by a dotted, scoped query
-//! (`MyStruct.init`, or `math.multiply` to qualify by module -- see
-//! `chainMatches`), and prints signatures, doc comments, and (for
-//! containers) fields/decls to a zargunaught `Printer`. A query matching a
-//! module's name dumps that module's whole API instead of a single symbol.
-//! `--verbose` additionally prints a function's body source, highlighted.
+//! Terminal output for `zkdocs show <symbol>`, `zkdocs --dump`, and
+//! `zkdocs --list-symbols` (plans/future_features.md §10.1, §10.2): finds
+//! symbols across all modules and nested container decls by bare name or by
+//! a dotted, scoped query (`MyStruct.init`, or `math.multiply` to qualify by
+//! module -- see `chainMatches`), and prints signatures, doc comments, and
+//! (for containers) fields/decls to a zargunaught `Printer`. A query
+//! matching a module's name dumps that module's whole API instead of a
+//! single symbol. `--verbose` additionally prints a function's body source,
+//! highlighted. `printSymbolNames` prints the flat name list that shell
+//! completion scripts query for `show <TAB>`.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zargs = @import("zargunaught");
@@ -27,6 +29,7 @@ fn symbolName(sym: *const symbols.Symbol) ?[]const u8 {
         .function => |f| f.name,
         .variable => |v| v.name,
         .container => |c| c.name,
+        .error_set => |e| e.name,
         .@"test", .other => null,
     };
 }
@@ -200,6 +203,13 @@ fn printContainerSig(printer: *const Printer, indent: usize, c: symbols.Containe
     try printer.print("\n", .{});
 }
 
+fn printErrorSetSig(printer: *const Printer, indent: usize, e: symbols.ErrorSet, color: bool) !void {
+    try printer.printNum(" ", indent);
+    try printer.print("{s}error {s}{s}", .{ sc(color, term.bold), e.name, sc(color, term.reset) });
+    if (e.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
+    try printer.print("\n", .{});
+}
+
 /// Print one symbol (and, for containers, its fields and nested decls)
 /// starting at `indent` spaces. `verbose` additionally prints a function's
 /// highlighted body source.
@@ -240,6 +250,16 @@ pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const sy
                 try printSymbol(printer, allocator, decl, indent + 2, color, verbose);
             }
         },
+        .error_set => |e| {
+            try printErrorSetSig(printer, indent, e, color);
+            try printDoc(printer, allocator, e.doc, indent + 2, color);
+
+            for (e.errors) |err_val| {
+                try printer.printNum(" ", indent + 2);
+                try printer.print("{s}error.{s}{s}\n", .{ sc(color, term.bold), err_val.name, sc(color, term.reset) });
+                try printDoc(printer, allocator, err_val.doc, indent + 4, color);
+            }
+        },
         .@"test", .other => {},
     }
 }
@@ -260,6 +280,43 @@ fn printModule(printer: *const Printer, allocator: Allocator, mod: *const symbol
 /// Print the entire extracted module graph (`zkdocs --dump`).
 pub fn printDump(printer: *const Printer, allocator: Allocator, modules: []const symbols.Module, color: bool, verbose: bool) !void {
     for (modules) |*mod| try printModule(printer, allocator, mod, color, verbose);
+}
+
+fn collectNames(allocator: Allocator, syms: []const symbols.Symbol, seen: *std.StringHashMap(void)) !void {
+    for (syms) |*sym| {
+        if (isImportConst(sym)) continue;
+        if (symbolName(sym)) |name| try seen.put(name, {});
+        if (sym.* == .container) try collectNames(allocator, sym.container.decls.items, seen);
+    }
+}
+
+/// Print every module name and every non-import symbol name (top-level and
+/// nested in containers), one per line, deduplicated and sorted -- the data
+/// source for `zkdocs --generate-completion`'s dynamic `show <TAB>`
+/// completion (plans/future_features.md §10.2). Matches `findSymbol`'s
+/// bare-name matching: any name printed here is one `zkdocs show <name>`
+/// will find.
+pub fn printSymbolNames(printer: *const Printer, allocator: Allocator, modules: []const symbols.Module) !void {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+
+    for (modules) |*mod| {
+        try seen.put(mod.name, {});
+        try collectNames(allocator, mod.symbols.items, &seen);
+    }
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(allocator);
+    var it = seen.keyIterator();
+    while (it.next()) |k| try names.append(allocator, k.*);
+
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    for (names.items) |name| try printer.print("{s}\n", .{name});
 }
 
 /// Print whatever matches `query` (`zkdocs show <query>`): a module whose

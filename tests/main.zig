@@ -13,6 +13,7 @@ const Tests = testz.discoverTests(.{
     testz.Group{ .name = "Function Extraction", .tag = "functions", .mod = @import("functions_tests.zig") },
     testz.Group{ .name = "Doc Comments", .tag = "docs", .mod = @import("docs_tests.zig") },
     testz.Group{ .name = "Container Extraction", .tag = "containers", .mod = @import("containers_tests.zig") },
+    testz.Group{ .name = "Error Set Documentation", .tag = "error_sets", .mod = @import("error_sets_tests.zig") },
     testz.Group{ .name = "Import Following", .tag = "imports", .mod = @import("imports_tests.zig") },
     testz.Group{ .name = "Markdown Rendering", .tag = "markdown", .mod = @import("markdown_tests.zig") },
     testz.Group{ .name = "Render / Sym Links", .tag = "render", .mod = @import("render_tests.zig") },
@@ -26,6 +27,7 @@ const Tests = testz.discoverTests(.{
     testz.Group{ .name = "Terminal ANSI Rendering", .tag = "term_render", .mod = @import("term_render_tests.zig") },
     testz.Group{ .name = "Show / Symbol Lookup", .tag = "show", .mod = @import("show_tests.zig") },
     testz.Group{ .name = "Show / Dump Printing", .tag = "show_print", .mod = @import("show_print_tests.zig") },
+    testz.Group{ .name = "Shell Completion", .tag = "completion", .mod = @import("completion_tests.zig") },
 }, .{});
 
 pub fn main(init: std.process.Init) !void {

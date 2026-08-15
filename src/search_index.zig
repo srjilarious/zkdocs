@@ -122,6 +122,15 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                         id += 1;
                     }
                 },
+                .error_set => |e| {
+                    if (e.is_pub) {
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, e.name });
+                        defer ctx.allocator.free(url);
+                        if (id > 0) try buf.append(ctx.allocator, ',');
+                        try appendSearchDoc(&buf, ctx.allocator, id, e.name, e.doc orelse "", url, "api");
+                        id += 1;
+                    }
+                },
                 .@"test", .other => {},
             }
         }

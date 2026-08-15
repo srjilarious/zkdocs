@@ -8,6 +8,7 @@ pub const SymbolKind = enum {
     function,
     variable,
     container,
+    error_set,
     @"test",
     other,
 };
@@ -15,6 +16,21 @@ pub const SymbolKind = enum {
 pub const Param = struct {
     name: ?[]const u8,
     type_src: []const u8,
+};
+
+/// One member of an `error{...}` set: its name and (optionally) the doc
+/// comment written directly above it.
+pub const ErrorVal = struct {
+    name: []const u8,
+    doc: ?[]const u8,
+};
+
+/// A named error set, e.g. `pub const MyError = error{Foo, Bar};`.
+pub const ErrorSet = struct {
+    name: []const u8,
+    doc: ?[]const u8,
+    is_pub: bool,
+    errors: []const ErrorVal,
 };
 
 pub const Function = struct {
@@ -27,6 +43,10 @@ pub const Function = struct {
     /// Source text of the function body block (including braces), or null for
     /// extern/proto-only declarations.
     body_src: ?[]const u8 = null,
+    /// Errors listed directly in the return type, e.g. the `Foo, Bar` in
+    /// `error{Foo, Bar}!T`. Empty when the return type has no inline error
+    /// set (a named error set like `MyError!T`, or no error union at all).
+    inline_errors: []const ErrorVal = &.{},
 };
 
 pub const ContainerKind = enum { @"struct", @"enum", @"union", @"opaque" };
@@ -63,6 +83,7 @@ pub const Symbol = union(SymbolKind) {
     function: Function,
     variable: Variable,
     container: Container,
+    error_set: ErrorSet,
     @"test": void,
     other: void,
 };
@@ -206,6 +227,21 @@ fn isPub(tree: std.zig.Ast, first_token: std.zig.Ast.TokenIndex) bool {
 
 fn nodeToSource(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) []const u8 {
     const start_tok = tree.firstToken(node);
+    const end_tok = tree.lastToken(node);
+    const start_byte = tree.tokenStart(start_tok);
+    const end_byte = tree.tokenStart(end_tok) + tree.tokenSlice(end_tok).len;
+    return tree.source[start_byte..end_byte];
+}
+
+/// Source text of a function's return type, including a leading `!` when
+/// present. `!T` (an inferred error set) is a special grammar case: the
+/// parser consumes and discards that `!` token, so unlike `Err!T` or
+/// `error{..}!T` (both `error_union` nodes whose span already starts at the
+/// left-hand error type) it never becomes part of the return type node's own
+/// token span.
+fn returnTypeSource(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) []const u8 {
+    var start_tok = tree.firstToken(node);
+    if (start_tok > 0 and tree.tokenTag(start_tok - 1) == .bang) start_tok -= 1;
     const end_tok = tree.lastToken(node);
     const start_byte = tree.tokenStart(start_tok);
     const end_byte = tree.tokenStart(end_tok) + tree.tokenSlice(end_tok).len;
@@ -368,6 +404,20 @@ fn deinitContainer(allocator: std.mem.Allocator, c: *Container) void {
     c.decls.deinit(allocator);
 }
 
+fn deinitErrorVals(allocator: std.mem.Allocator, errors: []const ErrorVal) void {
+    for (errors) |e| {
+        allocator.free(e.name);
+        if (e.doc) |d| allocator.free(d);
+    }
+    allocator.free(errors);
+}
+
+fn deinitErrorSet(allocator: std.mem.Allocator, e: *ErrorSet) void {
+    allocator.free(e.name);
+    if (e.doc) |s| allocator.free(s);
+    deinitErrorVals(allocator, e.errors);
+}
+
 fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
     switch (sym.*) {
         .function => |*f| {
@@ -381,6 +431,7 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
             if (f.doc) |s| allocator.free(s);
             if (f.body_src) |s| allocator.free(s);
             if (f.generic_return) |*c| deinitContainer(allocator, c);
+            deinitErrorVals(allocator, f.inline_errors);
         },
         .variable => |*v| {
             allocator.free(v.name);
@@ -389,6 +440,7 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
             if (v.doc) |s| allocator.free(s);
         },
         .container => |*c| deinitContainer(allocator, c),
+        .error_set => |*e| deinitErrorSet(allocator, e),
         .@"test", .other => {},
     }
 }
@@ -444,11 +496,26 @@ fn extractFnSymbol(
         try params_list.append(allocator, .{ .name = param_name, .type_src = type_src });
     }
 
-    const return_type_src: ?[]const u8 = if (proto.ast.return_type != .none)
-        try allocator.dupe(u8, nodeToSource(tree.*, proto.ast.return_type.unwrap().?))
+    const return_type_node = proto.ast.return_type.unwrap();
+    const return_type_src: ?[]const u8 = if (return_type_node) |rt|
+        try allocator.dupe(u8, returnTypeSource(tree.*, rt))
     else
         null;
     errdefer if (return_type_src) |s| allocator.free(s);
+
+    // `error{Foo, Bar}!T` — the inline error set is documented alongside the
+    // function itself; a named error set (`MyError!T`) is linked instead
+    // (see buildTypeIndex), so it's left for writeTypeSrc to find.
+    var inline_errors: []const ErrorVal = &.{};
+    errdefer deinitErrorVals(allocator, inline_errors);
+    if (return_type_node) |rt| {
+        if (tree.nodeTag(rt) == .error_union) {
+            const lhs = tree.nodeData(rt).node_and_node[0];
+            if (tree.nodeTag(lhs) == .error_set_decl) {
+                inline_errors = try extractErrorSetMembers(allocator, tree, lhs);
+            }
+        }
+    }
 
     var generic_return: ?Container = null;
     errdefer if (generic_return) |*c| deinitContainer(allocator, c);
@@ -491,6 +558,70 @@ fn extractFnSymbol(
             .is_pub = is_pub,
             .generic_return = generic_return,
             .body_src = body_src,
+            .inline_errors = inline_errors,
+        },
+    };
+}
+
+/// Extract the member names (and their doc comments, if any) of an
+/// `error{...}` declaration. `error_set_node` must have tag `.error_set_decl`.
+fn extractErrorSetMembers(
+    allocator: std.mem.Allocator,
+    tree: *const std.zig.Ast,
+    error_set_node: std.zig.Ast.Node.Index,
+) std.mem.Allocator.Error![]ErrorVal {
+    const braces = tree.nodeData(error_set_node).token_and_token;
+    const lbrace = braces[0];
+    const rbrace = braces[1];
+
+    var list = std.ArrayList(ErrorVal).empty;
+    errdefer {
+        for (list.items) |e| {
+            allocator.free(e.name);
+            if (e.doc) |d| allocator.free(d);
+        }
+        list.deinit(allocator);
+    }
+
+    var i = lbrace + 1;
+    while (i < rbrace) : (i += 1) {
+        if (tree.tokenTag(i) != .identifier) continue;
+        const doc = try collectDocComment(allocator, tree.*, i);
+        errdefer if (doc) |d| allocator.free(d);
+        const name = try allocator.dupe(u8, tree.tokenSlice(i));
+        errdefer allocator.free(name);
+        try list.append(allocator, .{ .name = name, .doc = doc });
+    }
+
+    return list.toOwnedSlice(allocator);
+}
+
+/// Extract a named error set from an `error_set_decl` node.
+/// `name` must be an already-allocated string; ownership is transferred to this
+/// function (freed on error, owned by the returned Symbol on success).
+/// `first_decl_tok` is the first token of the outer var_decl, used to locate
+/// the doc comment.
+fn extractErrorSetSymbol(
+    allocator: std.mem.Allocator,
+    tree: *const std.zig.Ast,
+    error_set_node: std.zig.Ast.Node.Index,
+    name: []u8,
+    first_decl_tok: std.zig.Ast.TokenIndex,
+    is_pub: bool,
+) std.mem.Allocator.Error!Symbol {
+    errdefer allocator.free(name);
+
+    const doc = try collectDocComment(allocator, tree.*, first_decl_tok);
+    errdefer if (doc) |d| allocator.free(d);
+
+    const errors = try extractErrorSetMembers(allocator, tree, error_set_node);
+
+    return .{
+        .error_set = .{
+            .name = name,
+            .doc = doc,
+            .is_pub = is_pub,
+            .errors = errors,
         },
     };
 }
@@ -593,6 +724,20 @@ fn extractContainerSymbol(
                     if (isContainerTag(tree.nodeTag(init_node))) {
                         const nested_name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
                         const sym = try extractContainerSymbol(
+                            allocator,
+                            tree,
+                            init_node,
+                            nested_name,
+                            member_first_tok,
+                            member_pub,
+                        );
+                        errdefer deinitSymbol(allocator, @constCast(&sym));
+                        try decls_list.append(allocator, sym);
+                        continue;
+                    }
+                    if (tree.nodeTag(init_node) == .error_set_decl) {
+                        const nested_name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
+                        const sym = try extractErrorSetSymbol(
                             allocator,
                             tree,
                             init_node,
@@ -762,6 +907,20 @@ pub fn extractModule(
                     if (isContainerTag(tree.nodeTag(init_node))) {
                         const name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
                         const sym = try extractContainerSymbol(
+                            allocator,
+                            tree,
+                            init_node,
+                            name,
+                            first_tok,
+                            is_pub,
+                        );
+                        errdefer deinitSymbol(allocator, @constCast(&sym));
+                        try module.symbols.append(allocator, sym);
+                        continue;
+                    }
+                    if (tree.nodeTag(init_node) == .error_set_decl) {
+                        const name = try allocator.dupe(u8, tree.tokenSlice(name_tok));
+                        const sym = try extractErrorSetSymbol(
                             allocator,
                             tree,
                             init_node,

@@ -284,6 +284,7 @@ pub fn writeFooter(buf: *Buf, ctx: *const SiteContext) !void {
 /// Shows Types → container names (with indented methods), Functions, Constants.
 pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !void {
     var has_types = false;
+    var has_errors = false;
     var has_fns = false;
     var has_consts = false;
     for (mod.symbols.items) |sym| {
@@ -298,10 +299,13 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
             .variable => |v| {
                 if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
             },
+            .error_set => |e| {
+                if (e.is_pub) has_errors = true;
+            },
             .@"test", .other => {},
         }
     }
-    if (!has_types and !has_fns and !has_consts) return;
+    if (!has_types and !has_errors and !has_fns and !has_consts) return;
 
     try buf.writeAll("<aside class=\"page-toc\">\n<h4>On this page</h4>\n<ul>\n");
 
@@ -365,6 +369,19 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
                 try buf.writeAll("</ul>\n");
             }
             try buf.writeAll("</li>\n");
+        }
+        try buf.writeAll("</ul>\n</li>\n");
+    }
+
+    if (has_errors) {
+        try buf.writeAll("<li><a href=\"#section-errors\">Errors</a>\n<ul class=\"toc-children\">\n");
+        for (mod.symbols.items) |sym| {
+            if (sym != .error_set) continue;
+            const e = sym.error_set;
+            if (!e.is_pub) continue;
+            try buf.print("<li><a href=\"#sym-{s}\">", .{e.name});
+            try htmlEscape(buf, e.name);
+            try buf.writeAll("</a></li>\n");
         }
         try buf.writeAll("</ul>\n</li>\n");
     }
@@ -474,6 +491,12 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
     }
     if (f.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
+    if (f.inline_errors.len > 0) {
+        try buf.writeAll("<div class=\"symbol-decls\">\n<h4>Errors</h4>\n");
+        try writeErrorsTable(buf, f.inline_errors);
+        try buf.writeAll("</div>\n");
+    }
+
     if (f.body_src) |body| {
         const highlighted = markdown.highlight.highlightZig(buf.alloc, body) catch blk: {
             var esc: std.ArrayList(u8) = .empty;
@@ -527,6 +550,39 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
         }
     }
 
+    try buf.writeAll("</div>\n");
+}
+
+/// Shared `Error | Description` table for an error set's members, used by
+/// both `renderErrorSet` (a named error set's own page block) and `renderFn`
+/// (a function's inline `error{...}!T` return type).
+fn writeErrorsTable(buf: *Buf, errors: []const symbols.ErrorVal) !void {
+    try buf.writeAll(
+        \\<table class="fields-table">
+        \\<tr><th>Error</th><th>Description</th></tr>
+        \\
+    );
+    for (errors) |e| {
+        try buf.writeAll("<tr><td>");
+        try htmlEscape(buf, e.name);
+        try buf.writeAll("</td><td class=\"field-doc\">");
+        if (e.doc) |d| try htmlEscape(buf, d);
+        try buf.writeAll("</td></tr>\n");
+    }
+    try buf.writeAll("</table>\n");
+}
+
+pub fn renderErrorSet(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, e: symbols.ErrorSet) !void {
+    try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{e.name});
+    try buf.writeAll("<div class=\"symbol-sig\"><code>");
+    if (e.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
+    try buf.print(
+        "<span class=\"kw\">error</span> <span class=\"fn-name\">{s}</span>",
+        .{e.name},
+    );
+    try buf.writeAll("</code></div>\n");
+    if (e.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
+    if (e.errors.len > 0) try writeErrorsTable(buf, e.errors);
     try buf.writeAll("</div>\n");
 }
 

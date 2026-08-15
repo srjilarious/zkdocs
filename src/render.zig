@@ -210,6 +210,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                                 .function => |f| f.doc,
                                 .variable => |v| v.doc,
                                 .container => |c| c.doc,
+                                .error_set => |e| e.doc,
                                 .@"test", .other => null,
                             };
                             if (d != null) break :blk2 d;
@@ -280,6 +281,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
             if (mod.doc) |doc| try page_render.writeDoc(&buf, &ctx, mod.name, doc);
 
             var has_types = false;
+            var has_errors = false;
             var has_fns = false;
             var has_consts = false;
             for (mod.symbols.items) |sym| {
@@ -293,6 +295,9 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                     },
                     .variable => |v| {
                         if (v.is_pub and (ctx.show_imports or !v.is_import)) has_consts = true;
+                    },
+                    .error_set => |e| {
+                        if (e.is_pub) has_errors = true;
                     },
                     .@"test", .other => {},
                 }
@@ -308,6 +313,13 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                     if (sym != .function) continue;
                     const f = sym.function;
                     if (f.is_pub and f.generic_return != null) try page_render.renderFn(&buf, &ctx, mod.name, f, null);
+                }
+            }
+            if (has_errors) {
+                try buf.writeAll("<h2 id=\"section-errors\">Errors</h2>\n");
+                for (mod.symbols.items) |sym| {
+                    if (sym == .error_set and sym.error_set.is_pub)
+                        try page_render.renderErrorSet(&buf, &ctx, mod.name, sym.error_set);
                 }
             }
             if (has_fns) {
