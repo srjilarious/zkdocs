@@ -103,6 +103,13 @@ fn findInSymbols(
             try path.append(allocator, sym.container.name);
             try findInSymbols(allocator, module, sym.container.decls.items, path, query_segs, out);
             _ = path.pop();
+        } else if (sym.* == .function and sym.function.generic_return != null) {
+            // A generic type constructor (`fn Stack(comptime T: type) type`)
+            // is queryable the same way a plain container is, e.g.
+            // `zkdocs show Stack.push`.
+            try path.append(allocator, sym.function.name);
+            try findInSymbols(allocator, module, sym.function.generic_return.?.decls.items, path, query_segs, out);
+            _ = path.pop();
         }
     }
 }
@@ -185,6 +192,7 @@ fn printFunctionSig(printer: *const Printer, indent: usize, f: symbols.Function,
     try printer.print(")", .{});
     if (f.return_type_src) |r| try printer.print(" {s}{s}{s}", .{ sc(color, term.green), r, sc(color, term.reset) });
     if (f.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
+    if (f.generic_return != null) try printer.print("  {s}[generic]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     try printer.print("\n", .{});
 }
 
@@ -210,6 +218,33 @@ fn printErrorSetSig(printer: *const Printer, indent: usize, e: symbols.ErrorSet,
     try printer.print("\n", .{});
 }
 
+/// Print a container's fields and nested decls (but not its own signature/doc)
+/// at `indent + 2`. Shared by the `.container` case and, for a function whose
+/// return type is itself a generic container (`fn Stack(comptime T: type) type`),
+/// the `.function` case -- both expose the same fields/methods, just reached
+/// via a plain type versus a generic type constructor.
+fn printContainerBody(printer: *const Printer, allocator: Allocator, c: symbols.Container, indent: usize, color: bool, verbose: bool) anyerror!void {
+    for (c.fields) |field| {
+        try printer.printNum(" ", indent + 2);
+        try printer.print("{s}.{s}{s}", .{ sc(color, term.bold), field.name, sc(color, term.reset) });
+        if (field.type_src) |t| try printer.print(": {s}{s}{s}", .{ sc(color, term.green), t, sc(color, term.reset) });
+        try printer.print("\n", .{});
+        try printDoc(printer, allocator, field.doc, indent + 4, color);
+    }
+
+    const decls = c.decls.items;
+    var printed_header = false;
+    for (decls) |*decl| {
+        if (isImportConst(decl)) continue;
+        if (!printed_header) {
+            try printer.printNum(" ", indent + 2);
+            try printer.print("{s}--- decls ---{s}\n", .{ sc(color, term.gray), sc(color, term.reset) });
+            printed_header = true;
+        }
+        try printSymbol(printer, allocator, decl, indent + 2, color, verbose);
+    }
+}
+
 /// Print one symbol (and, for containers, its fields and nested decls)
 /// starting at `indent` spaces. `verbose` additionally prints a function's
 /// highlighted body source.
@@ -218,6 +253,12 @@ pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const sy
         .function => |f| {
             try printFunctionSig(printer, indent, f, color);
             try printDoc(printer, allocator, f.doc, indent + 2, color);
+            if (f.generic_return) |gr| {
+                // Body source is intentionally null for generic-return
+                // functions (see symbols.zig) -- the container it returns
+                // is the useful thing to show instead.
+                try printContainerBody(printer, allocator, gr, indent, color, verbose);
+            }
             if (verbose) {
                 if (f.body_src) |body| try printFunctionBody(printer, allocator, body, indent + 2, color);
             }
@@ -229,26 +270,7 @@ pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const sy
         .container => |c| {
             try printContainerSig(printer, indent, c, color);
             try printDoc(printer, allocator, c.doc, indent + 2, color);
-
-            for (c.fields) |field| {
-                try printer.printNum(" ", indent + 2);
-                try printer.print("{s}.{s}{s}", .{ sc(color, term.bold), field.name, sc(color, term.reset) });
-                if (field.type_src) |t| try printer.print(": {s}{s}{s}", .{ sc(color, term.green), t, sc(color, term.reset) });
-                try printer.print("\n", .{});
-                try printDoc(printer, allocator, field.doc, indent + 4, color);
-            }
-
-            const decls = c.decls.items;
-            var printed_header = false;
-            for (decls) |*decl| {
-                if (isImportConst(decl)) continue;
-                if (!printed_header) {
-                    try printer.printNum(" ", indent + 2);
-                    try printer.print("{s}--- decls ---{s}\n", .{ sc(color, term.gray), sc(color, term.reset) });
-                    printed_header = true;
-                }
-                try printSymbol(printer, allocator, decl, indent + 2, color, verbose);
-            }
+            try printContainerBody(printer, allocator, c, indent, color, verbose);
         },
         .error_set => |e| {
             try printErrorSetSig(printer, indent, e, color);
@@ -286,7 +308,11 @@ fn collectNames(allocator: Allocator, syms: []const symbols.Symbol, seen: *std.S
     for (syms) |*sym| {
         if (isImportConst(sym)) continue;
         if (symbolName(sym)) |name| try seen.put(name, {});
-        if (sym.* == .container) try collectNames(allocator, sym.container.decls.items, seen);
+        if (sym.* == .container) {
+            try collectNames(allocator, sym.container.decls.items, seen);
+        } else if (sym.* == .function and sym.function.generic_return != null) {
+            try collectNames(allocator, sym.function.generic_return.?.decls.items, seen);
+        }
     }
 }
 
