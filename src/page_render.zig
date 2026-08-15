@@ -287,6 +287,7 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
     var has_errors = false;
     var has_fns = false;
     var has_consts = false;
+    var has_comptime_blocks = false;
     for (mod.symbols.items) |sym| {
         switch (sym) {
             .container => |c| {
@@ -302,10 +303,11 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
             .error_set => |e| {
                 if (e.is_pub) has_errors = true;
             },
+            .comptime_block => has_comptime_blocks = true,
             .@"test", .other => {},
         }
     }
-    if (!has_types and !has_errors and !has_fns and !has_consts) return;
+    if (!has_types and !has_errors and !has_fns and !has_consts and !has_comptime_blocks) return;
 
     try buf.writeAll("<aside class=\"page-toc\">\n<h4>On this page</h4>\n<ul>\n");
 
@@ -414,6 +416,10 @@ pub fn writeApiToc(buf: *Buf, ctx: *const SiteContext, mod: symbols.Module) !voi
         try buf.writeAll("</ul>\n</li>\n");
     }
 
+    if (has_comptime_blocks) {
+        try buf.writeAll("<li><a href=\"#section-comptime\">Comptime Blocks</a></li>\n");
+    }
+
     try buf.writeAll("</ul>\n</aside>\n");
 }
 
@@ -465,29 +471,45 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
     } else {
         try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{f.name});
     }
-    if (f.generic_return != null) {
+    const has_badges = f.generic_return != null or f.is_extern or f.is_export or f.is_comptime_only;
+    if (has_badges) {
         try buf.writeAll("<div class=\"symbol-sig-row\">");
     }
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (f.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
+    if (f.is_extern) {
+        try buf.writeAll("<span class=\"kw\">extern </span>");
+        if (f.extern_lib_name) |ln| try buf.print("<span class=\"kw\">{s} </span>", .{ln});
+    }
+    if (f.is_export) try buf.writeAll("<span class=\"kw\">export </span>");
     try buf.writeAll("<span class=\"kw\">fn </span>");
     try buf.print("<span class=\"fn-name\">{s}</span>(", .{f.name});
     for (f.params, 0..) |p, i| {
         if (i > 0) try buf.writeAll(", ");
+        if (p.is_comptime) try buf.writeAll("<span class=\"kw\">comptime </span>");
         if (p.name) |n| try buf.print("<span class=\"param-name\">{s}</span>: ", .{n});
         try buf.writeAll("<span class=\"type-name\">");
         try writeTypeSrc(buf, ctx, current_module, p.type_src, parent_container);
         try buf.writeAll("</span>");
     }
     try buf.writeAll(")");
+    if (f.callconv_src) |cc| {
+        try buf.writeAll(" <span class=\"kw\">callconv</span>(<span class=\"type-name\">");
+        try htmlEscape(buf, cc);
+        try buf.writeAll("</span>)");
+    }
     if (f.return_type_src) |r| {
         try buf.writeAll(" <span class=\"type-name\">");
         try writeTypeSrc(buf, ctx, current_module, r, parent_container);
         try buf.writeAll("</span>");
     }
     try buf.writeAll("</code></div>\n");
-    if (f.generic_return != null) {
-        try buf.writeAll("<span class=\"pill-generic\">generic</span></div>\n");
+    if (has_badges) {
+        if (f.generic_return != null) try buf.writeAll("<span class=\"pill\">generic</span>");
+        if (f.is_extern) try buf.writeAll("<span class=\"pill\">extern</span>");
+        if (f.is_export) try buf.writeAll("<span class=\"pill\">export</span>");
+        if (f.is_comptime_only) try buf.writeAll("<span class=\"pill\">comptime</span>");
+        try buf.writeAll("</div>\n");
     }
     if (f.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
 
@@ -498,17 +520,7 @@ pub fn renderFn(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, 
     }
 
     if (f.body_src) |body| {
-        const highlighted = markdown.highlight.highlightZig(buf.alloc, body) catch blk: {
-            var esc: std.ArrayList(u8) = .empty;
-            defer esc.deinit(buf.alloc);
-            for (body) |c| switch (c) {
-                '<' => try esc.appendSlice(buf.alloc, "&lt;"),
-                '>' => try esc.appendSlice(buf.alloc, "&gt;"),
-                '&' => try esc.appendSlice(buf.alloc, "&amp;"),
-                else => try esc.append(buf.alloc, c),
-            };
-            break :blk try esc.toOwnedSlice(buf.alloc);
-        };
+        const highlighted = try highlightZigOrEscape(buf.alloc, body);
         defer buf.alloc.free(highlighted);
         try buf.writeAll("<details class=\"fn-body\"><summary>source</summary><pre><code class=\"language-zig\">");
         try buf.writeAll(highlighted);
@@ -586,10 +598,45 @@ pub fn renderErrorSet(buf: *Buf, ctx: *const SiteContext, current_module: []cons
     try buf.writeAll("</div>\n");
 }
 
+/// Zig-highlight `src`, falling back to plain HTML-escaped text if
+/// highlighting fails. Caller owns and must free the returned slice.
+fn highlightZigOrEscape(alloc: std.mem.Allocator, src: []const u8) ![]const u8 {
+    return markdown.highlight.highlightZig(alloc, src) catch blk: {
+        var esc: std.ArrayList(u8) = .empty;
+        defer esc.deinit(alloc);
+        for (src) |c| switch (c) {
+            '<' => try esc.appendSlice(alloc, "&lt;"),
+            '>' => try esc.appendSlice(alloc, "&gt;"),
+            '&' => try esc.appendSlice(alloc, "&amp;"),
+            else => try esc.append(alloc, c),
+        };
+        break :blk try esc.toOwnedSlice(alloc);
+    };
+}
+
+/// Render a `comptime { ... }` block written at container/module scope as a
+/// standalone note: its doc comment (if any) plus a collapsible view of the
+/// block's source. `index` disambiguates the anchor id among a page's other
+/// comptime blocks, since the block itself has no name.
+pub fn renderComptimeBlock(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, index: usize, cb: symbols.ComptimeBlock) !void {
+    try buf.print("<div class=\"symbol\" id=\"sym-comptime-{d}\">\n", .{index});
+    try buf.writeAll("<div class=\"symbol-sig\"><code><span class=\"kw\">comptime</span> { &hellip; }</code></div>\n");
+    if (cb.doc) |doc| try writeDoc(buf, ctx, current_module, doc);
+
+    const highlighted = try highlightZigOrEscape(buf.alloc, cb.body_src);
+    defer buf.alloc.free(highlighted);
+    try buf.writeAll("<details class=\"fn-body\"><summary>source</summary><pre><code class=\"language-zig\">");
+    try buf.writeAll(highlighted);
+    try buf.writeAll("</code></pre></details>\n");
+
+    try buf.writeAll("</div>\n");
+}
+
 pub fn renderContainer(buf: *Buf, ctx: *const SiteContext, current_module: []const u8, c: symbols.Container) !void {
     try buf.print("<div class=\"symbol\" id=\"sym-{s}\">\n", .{c.name});
     try buf.writeAll("<div class=\"symbol-sig\"><code>");
     if (c.is_pub) try buf.writeAll("<span class=\"kw\">pub </span>");
+    if (c.layout) |l| try buf.print("<span class=\"kw\">{s} </span>", .{@tagName(l)});
     try buf.print(
         "<span class=\"kw\">{s}</span> <span class=\"fn-name\">{s}</span>",
         .{ @tagName(c.kind), c.name },

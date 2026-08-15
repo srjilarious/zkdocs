@@ -14,6 +14,7 @@ const Tests = testz.discoverTests(.{
     testz.Group{ .name = "Doc Comments", .tag = "docs", .mod = @import("docs_tests.zig") },
     testz.Group{ .name = "Container Extraction", .tag = "containers", .mod = @import("containers_tests.zig") },
     testz.Group{ .name = "Error Set Documentation", .tag = "error_sets", .mod = @import("error_sets_tests.zig") },
+    testz.Group{ .name = "Comptime / Extern Documentation", .tag = "comptime_extern", .mod = @import("comptime_extern_tests.zig") },
     testz.Group{ .name = "Import Following", .tag = "imports", .mod = @import("imports_tests.zig") },
     testz.Group{ .name = "Markdown Rendering", .tag = "markdown", .mod = @import("markdown_tests.zig") },
     testz.Group{ .name = "Render / Sym Links", .tag = "render", .mod = @import("render_tests.zig") },

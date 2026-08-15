@@ -187,7 +187,7 @@ h4 { font-size: .85rem; color: var(--muted); margin: .75rem 0 .4rem; }
   justify-content: space-between;
   gap: .5rem;
 }
-.pill-generic {
+.pill {
   flex-shrink: 0;
   font-size: .7rem;
   font-weight: 600;
@@ -720,7 +720,7 @@ pre:hover .copy-btn { opacity: 1; }
   --num:       #ae81ff;
 }
 [data-theme="monokai"] .hl-comment { color: #75715e; }
-[data-theme="monokai"] .pill-generic {
+[data-theme="monokai"] .pill {
   color: #66d9ef;
   background: rgba(102,217,239,.12);
   border-color: rgba(102,217,239,.3);
@@ -758,7 +758,7 @@ pre:hover .copy-btn { opacity: 1; }
 [data-theme="vscode-light"] #search-input          { background: #fff; color: #1f1f1f; }
 [data-theme="vscode-light"] #search-input:focus    { background: #fff; }
 [data-theme="vscode-light"] .copy-btn              { background: rgba(0,0,0,.06); }
-[data-theme="vscode-light"] .pill-generic {
+[data-theme="vscode-light"] .pill {
   color: #0078d4;
   background: rgba(0,120,212,.08);
   border-color: rgba(0,120,212,.25);
@@ -782,7 +782,7 @@ pre:hover .copy-btn { opacity: 1; }
   --num:       #b5cea8;
 }
 [data-theme="vscode-dark"] .hl-comment { color: #6a9955; }
-[data-theme="vscode-dark"] .pill-generic {
+[data-theme="vscode-dark"] .pill {
   color: #4ec9b0;
   background: rgba(78,201,176,.12);
   border-color: rgba(78,201,176,.3);

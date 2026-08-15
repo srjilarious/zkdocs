@@ -154,7 +154,7 @@ fn pubSymbolName(sym: symbols.Symbol) ?[]const u8 {
         .variable => |v| if (v.is_pub) v.name else null,
         .container => |c| if (c.is_pub) c.name else null,
         .error_set => |e| if (e.is_pub) e.name else null,
-        .@"test", .other => null,
+        .comptime_block, .@"test", .other => null,
     };
 }
 

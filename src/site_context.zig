@@ -56,7 +56,7 @@ pub fn buildTypeIndex(allocator: std.mem.Allocator, mods: []const symbols.Module
                         .anchor_name = e.name,
                     });
                 },
-                .variable, .@"test", .other => {},
+                .variable, .comptime_block, .@"test", .other => {},
             }
         }
     }

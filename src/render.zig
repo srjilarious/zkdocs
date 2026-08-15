@@ -211,7 +211,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                                 .variable => |v| v.doc,
                                 .container => |c| c.doc,
                                 .error_set => |e| e.doc,
-                                .@"test", .other => null,
+                                .comptime_block, .@"test", .other => null,
                             };
                             if (d != null) break :blk2 d;
                         }
@@ -284,6 +284,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
             var has_errors = false;
             var has_fns = false;
             var has_consts = false;
+            var has_comptime_blocks = false;
             for (mod.symbols.items) |sym| {
                 switch (sym) {
                     .container => |c| {
@@ -299,6 +300,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                     .error_set => |e| {
                         if (e.is_pub) has_errors = true;
                     },
+                    .comptime_block => has_comptime_blocks = true,
                     .@"test", .other => {},
                 }
             }
@@ -337,6 +339,16 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
                     if (sym == .variable) {
                         const v = sym.variable;
                         if (v.is_pub and (ctx.show_imports or !v.is_import)) try page_render.renderVar(&buf, &ctx, mod.name, v);
+                    }
+                }
+            }
+            if (has_comptime_blocks) {
+                try buf.writeAll("<h2 id=\"section-comptime\">Comptime Blocks</h2>\n");
+                var cb_index: usize = 0;
+                for (mod.symbols.items) |sym| {
+                    if (sym == .comptime_block) {
+                        try page_render.renderComptimeBlock(&buf, &ctx, mod.name, cb_index, sym.comptime_block);
+                        cb_index += 1;
                     }
                 }
             }

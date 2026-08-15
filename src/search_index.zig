@@ -131,7 +131,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                         id += 1;
                     }
                 },
-                .@"test", .other => {},
+                .comptime_block, .@"test", .other => {},
             }
         }
     }

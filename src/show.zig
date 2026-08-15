@@ -30,7 +30,7 @@ fn symbolName(sym: *const symbols.Symbol) ?[]const u8 {
         .variable => |v| v.name,
         .container => |c| c.name,
         .error_set => |e| e.name,
-        .@"test", .other => null,
+        .comptime_block, .@"test", .other => null,
     };
 }
 
@@ -183,16 +183,29 @@ fn printFunctionBody(printer: *const Printer, allocator: Allocator, body_src: []
 
 fn printFunctionSig(printer: *const Printer, indent: usize, f: symbols.Function, color: bool) !void {
     try printer.printNum(" ", indent);
-    try printer.print("{s}fn {s}{s}(", .{ sc(color, term.bold), f.name, sc(color, term.reset) });
+    if (f.is_extern) {
+        try printer.print("{s}extern ", .{sc(color, term.bold)});
+        if (f.extern_lib_name) |ln| try printer.print("{s} ", .{ln});
+    } else if (f.is_export) {
+        try printer.print("{s}export ", .{sc(color, term.bold)});
+    } else {
+        try printer.print("{s}", .{sc(color, term.bold)});
+    }
+    try printer.print("fn {s}{s}(", .{ f.name, sc(color, term.reset) });
     for (f.params, 0..) |p, i| {
         if (i > 0) try printer.print(", ", .{});
+        if (p.is_comptime) try printer.print("comptime ", .{});
         if (p.name) |n| try printer.print("{s}: ", .{n});
         try printer.print("{s}{s}{s}", .{ sc(color, term.green), p.type_src, sc(color, term.reset) });
     }
     try printer.print(")", .{});
+    if (f.callconv_src) |cc| try printer.print(" callconv({s}{s}{s})", .{ sc(color, term.green), cc, sc(color, term.reset) });
     if (f.return_type_src) |r| try printer.print(" {s}{s}{s}", .{ sc(color, term.green), r, sc(color, term.reset) });
     if (f.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     if (f.generic_return != null) try printer.print("  {s}[generic]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
+    if (f.is_extern) try printer.print("  {s}[extern]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
+    if (f.is_export) try printer.print("  {s}[export]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
+    if (f.is_comptime_only) try printer.print("  {s}[comptime]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     try printer.print("\n", .{});
 }
 
@@ -200,12 +213,21 @@ fn printVariableSig(printer: *const Printer, indent: usize, v: symbols.Variable,
     try printer.printNum(" ", indent);
     try printer.print("{s}const {s}{s}", .{ sc(color, term.bold), v.name, sc(color, term.reset) });
     if (v.type_src) |t| try printer.print(": {s}{s}{s}", .{ sc(color, term.green), t, sc(color, term.reset) });
+    if (v.value_src) |val| {
+        if (std.mem.indexOfScalar(u8, val, '\n') == null) {
+            try printer.print(" = {s}{s}{s}", .{ sc(color, term.green), val, sc(color, term.reset) });
+        }
+    }
     if (v.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     try printer.print("\n", .{});
+    if (v.value_src) |val| {
+        if (std.mem.indexOfScalar(u8, val, '\n') != null) try printIndented(printer, val, indent + 2);
+    }
 }
 
 fn printContainerSig(printer: *const Printer, indent: usize, c: symbols.Container, color: bool) !void {
     try printer.printNum(" ", indent);
+    if (c.layout) |l| try printer.print("{s}{s} ", .{ sc(color, term.bold), @tagName(l) });
     try printer.print("{s}{s} {s}{s}", .{ sc(color, term.bold), @tagName(c.kind), c.name, sc(color, term.reset) });
     if (c.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     try printer.print("\n", .{});
@@ -216,6 +238,11 @@ fn printErrorSetSig(printer: *const Printer, indent: usize, e: symbols.ErrorSet,
     try printer.print("{s}error {s}{s}", .{ sc(color, term.bold), e.name, sc(color, term.reset) });
     if (e.is_pub) try printer.print("  {s}[pub]{s}", .{ sc(color, term.gray), sc(color, term.reset) });
     try printer.print("\n", .{});
+}
+
+fn printComptimeBlockSig(printer: *const Printer, indent: usize, color: bool) !void {
+    try printer.printNum(" ", indent);
+    try printer.print("{s}comptime{s} {{ ... }}\n", .{ sc(color, term.bold), sc(color, term.reset) });
 }
 
 /// Print a container's fields and nested decls (but not its own signature/doc)
@@ -281,6 +308,11 @@ pub fn printSymbol(printer: *const Printer, allocator: Allocator, sym: *const sy
                 try printer.print("{s}error.{s}{s}\n", .{ sc(color, term.bold), err_val.name, sc(color, term.reset) });
                 try printDoc(printer, allocator, err_val.doc, indent + 4, color);
             }
+        },
+        .comptime_block => |cb| {
+            try printComptimeBlockSig(printer, indent, color);
+            try printDoc(printer, allocator, cb.doc, indent + 2, color);
+            try printFunctionBody(printer, allocator, cb.body_src, indent + 2, color);
         },
         .@"test", .other => {},
     }

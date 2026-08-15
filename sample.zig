@@ -130,6 +130,49 @@ pub fn Stack(comptime T: type) type {
     };
 }
 
+/// Returns the first `n` items of a slice whose element type is only known
+/// at compile time. Only `T` is comptime here, so this can still be called
+/// with runtime `items`/`n`.
+pub fn firstN(comptime T: type, items: []const T, n: usize) []const T {
+    return items[0..n];
+}
+
+/// Rounds `@sizeOf(T)` up to `alignment`. Every parameter is comptime, so
+/// this can only ever be called in a comptime context.
+pub fn sizeOfPadded(comptime T: type, comptime alignment: usize) usize {
+    return std.mem.alignForward(usize, @sizeOf(T), alignment);
+}
+
+// Sanity-checks the module's default buffer size at compile time. Zig
+// doesn't allow a `///` doc comment directly above a bare `comptime {}`
+// block (a plain `//` comment like this one is the most a block like this
+// can carry), so this fixture only exercises comptime-block extraction
+// itself -- the accompanying-doc-comment case is covered by a synthetic
+// source string in error_sets_tests.zig's sibling, comptime_extern_tests.zig.
+comptime {
+    if (default_buf_size == 0) @compileError("default_buf_size must be non-zero");
+}
+
+/// Declares (but does not implement) a C function this module can call.
+pub extern "c" fn c_abs(x: i32) callconv(.c) i32;
+
+/// Exposes `add` under a C-compatible calling convention and symbol name.
+pub export fn addExported(a: i32, b: i32) callconv(.c) i32 {
+    return add(a, b);
+}
+
+/// A C-compatible point layout, safe to pass across the FFI boundary.
+pub const ExternPoint = extern struct {
+    x: i32,
+    y: i32,
+};
+
+/// A tightly packed pair of boolean flags.
+pub const PackedFlags = packed struct {
+    a: bool,
+    b: bool,
+};
+
 /// A type with sequential code fences in its doc comment.
 ///
 /// First example:

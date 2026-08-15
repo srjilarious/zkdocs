@@ -9,6 +9,7 @@ pub const SymbolKind = enum {
     variable,
     container,
     error_set,
+    comptime_block,
     @"test",
     other,
 };
@@ -16,6 +17,8 @@ pub const SymbolKind = enum {
 pub const Param = struct {
     name: ?[]const u8,
     type_src: []const u8,
+    /// True for `comptime T: type` / `comptime value: T` parameters.
+    is_comptime: bool = false,
 };
 
 /// One member of an `error{...}` set: its name and (optionally) the doc
@@ -47,9 +50,27 @@ pub const Function = struct {
     /// `error{Foo, Bar}!T`. Empty when the return type has no inline error
     /// set (a named error set like `MyError!T`, or no error union at all).
     inline_errors: []const ErrorVal = &.{},
+    /// True for `extern fn` (a body-less declaration importing an external
+    /// symbol).
+    is_extern: bool = false,
+    /// True for `export fn` (a body that's exported under its own name).
+    is_export: bool = false,
+    /// The library string in `extern "c" fn ...`, quotes included, or null.
+    extern_lib_name: ?[]const u8 = null,
+    /// Source text of a `callconv(...)` clause's argument (e.g. `.c`), or
+    /// null when the function has no explicit calling convention.
+    callconv_src: ?[]const u8 = null,
+    /// True when every parameter is `comptime`-qualified, meaning the
+    /// function can only ever be called in a comptime context. False for a
+    /// zero-parameter function -- there's nothing there to force comptime.
+    is_comptime_only: bool = false,
 };
 
 pub const ContainerKind = enum { @"struct", @"enum", @"union", @"opaque" };
+
+/// Storage layout qualifier written directly before `struct`/`union`, e.g.
+/// `extern struct {...}` or `packed struct {...}`.
+pub const ContainerLayout = enum { @"extern", @"packed" };
 
 pub const Field = struct {
     name: []const u8,
@@ -65,6 +86,18 @@ pub const Container = struct {
     fields: []const Field,
     /// Nested functions and types declared inside the container.
     decls: std.ArrayListUnmanaged(Symbol),
+    layout: ?ContainerLayout = null,
+};
+
+/// A `comptime { ... }` block written directly at container/module scope,
+/// documented by the doc comment immediately above it (if any). Has no name
+/// of its own, so it's rendered as a standalone note rather than a symbol
+/// with a signature.
+pub const ComptimeBlock = struct {
+    doc: ?[]const u8,
+    /// Source text of the block, including the leading `comptime` keyword
+    /// and its braces.
+    body_src: []const u8,
 };
 
 pub const Variable = struct {
@@ -84,6 +117,7 @@ pub const Symbol = union(SymbolKind) {
     variable: Variable,
     container: Container,
     error_set: ErrorSet,
+    comptime_block: ComptimeBlock,
     @"test": void,
     other: void,
 };
@@ -356,6 +390,15 @@ fn getContainerKind(tree: std.zig.Ast, cd: std.zig.Ast.full.ContainerDecl) Conta
     };
 }
 
+fn getContainerLayout(tree: std.zig.Ast, cd: std.zig.Ast.full.ContainerDecl) ?ContainerLayout {
+    const lt = cd.layout_token orelse return null;
+    return switch (tree.tokenTag(lt)) {
+        .keyword_extern => .@"extern",
+        .keyword_packed => .@"packed",
+        else => null,
+    };
+}
+
 /// If `node` is a `@import("./relative/path.zig")` call, return the path
 /// string (without quotes). Returns null otherwise or for non-relative imports.
 fn getImportPath(tree: std.zig.Ast, node: std.zig.Ast.Node.Index) ?[]const u8 {
@@ -432,6 +475,8 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
             if (f.body_src) |s| allocator.free(s);
             if (f.generic_return) |*c| deinitContainer(allocator, c);
             deinitErrorVals(allocator, f.inline_errors);
+            if (f.extern_lib_name) |s| allocator.free(s);
+            if (f.callconv_src) |s| allocator.free(s);
         },
         .variable => |*v| {
             allocator.free(v.name);
@@ -441,6 +486,10 @@ fn deinitSymbol(allocator: std.mem.Allocator, sym: *Symbol) void {
         },
         .container => |*c| deinitContainer(allocator, c),
         .error_set => |*e| deinitErrorSet(allocator, e),
+        .comptime_block => |*cb| {
+            if (cb.doc) |s| allocator.free(s);
+            allocator.free(cb.body_src);
+        },
         .@"test", .other => {},
     }
 }
@@ -493,8 +542,43 @@ fn extractFnSymbol(
             try allocator.dupe(u8, "anytype");
         errdefer allocator.free(type_src);
 
-        try params_list.append(allocator, .{ .name = param_name, .type_src = type_src });
+        const is_comptime = if (p.comptime_noalias) |cn| tree.tokenTag(cn) == .keyword_comptime else false;
+
+        try params_list.append(allocator, .{ .name = param_name, .type_src = type_src, .is_comptime = is_comptime });
     }
+
+    // A function can only ever be invoked in a comptime context when every
+    // one of its parameters is comptime-qualified; a zero-parameter
+    // function has nothing forcing that, so it's not "comptime-only" by
+    // this definition.
+    var is_comptime_only = params_list.items.len > 0;
+    for (params_list.items) |p| {
+        if (!p.is_comptime) {
+            is_comptime_only = false;
+            break;
+        }
+    }
+
+    var is_extern = false;
+    var is_export = false;
+    var extern_lib_name: ?[]const u8 = null;
+    errdefer if (extern_lib_name) |s| allocator.free(s);
+    if (proto.extern_export_inline_token) |eei| {
+        switch (tree.tokenTag(eei)) {
+            .keyword_extern => {
+                is_extern = true;
+                if (proto.lib_name) |ln| extern_lib_name = try allocator.dupe(u8, tree.tokenSlice(ln));
+            },
+            .keyword_export => is_export = true,
+            else => {},
+        }
+    }
+
+    const callconv_src: ?[]const u8 = if (proto.ast.callconv_expr.unwrap()) |cc|
+        try allocator.dupe(u8, nodeToSource(tree.*, cc))
+    else
+        null;
+    errdefer if (callconv_src) |s| allocator.free(s);
 
     const return_type_node = proto.ast.return_type.unwrap();
     const return_type_src: ?[]const u8 = if (return_type_node) |rt|
@@ -559,6 +643,11 @@ fn extractFnSymbol(
             .generic_return = generic_return,
             .body_src = body_src,
             .inline_errors = inline_errors,
+            .is_extern = is_extern,
+            .is_export = is_export,
+            .extern_lib_name = extern_lib_name,
+            .callconv_src = callconv_src,
+            .is_comptime_only = is_comptime_only,
         },
     };
 }
@@ -626,6 +715,27 @@ fn extractErrorSetSymbol(
     };
 }
 
+/// Extract a `comptime { ... }` block written at container/module scope.
+/// `node` must have tag `.@"comptime"`.
+fn extractComptimeBlockSymbol(
+    allocator: std.mem.Allocator,
+    tree: *const std.zig.Ast,
+    node: std.zig.Ast.Node.Index,
+) std.mem.Allocator.Error!Symbol {
+    const first_tok = tree.firstToken(node);
+    const doc = try collectDocComment(allocator, tree.*, first_tok);
+    errdefer if (doc) |d| allocator.free(d);
+
+    const body_src = try allocator.dupe(u8, nodeToSource(tree.*, node));
+
+    return .{
+        .comptime_block = .{
+            .doc = doc,
+            .body_src = body_src,
+        },
+    };
+}
+
 /// Extract a container symbol from a container_decl_* or tagged_union_* node.
 /// `name` must be an already-allocated string; ownership is transferred to this
 /// function (freed on error, owned by the returned Symbol on success).
@@ -647,6 +757,7 @@ fn extractContainerSymbol(
     var cd_buf: [2]std.zig.Ast.Node.Index = undefined;
     const cd = tree.fullContainerDecl(&cd_buf, container_node).?;
     const kind = getContainerKind(tree.*, cd);
+    const layout = getContainerLayout(tree.*, cd);
 
     var fields_list = std.ArrayList(Field).empty;
     errdefer {
@@ -706,6 +817,12 @@ fn extractContainerSymbol(
             .fn_proto,
             => {
                 const sym = try extractFnSymbol(allocator, tree, member);
+                errdefer deinitSymbol(allocator, @constCast(&sym));
+                try decls_list.append(allocator, sym);
+            },
+            // --- comptime blocks ---
+            .@"comptime" => {
+                const sym = try extractComptimeBlockSymbol(allocator, tree, member);
                 errdefer deinitSymbol(allocator, @constCast(&sym));
                 try decls_list.append(allocator, sym);
             },
@@ -796,6 +913,7 @@ fn extractContainerSymbol(
             .is_pub = is_pub,
             .fields = try fields_list.toOwnedSlice(allocator),
             .decls = decls_list,
+            .layout = layout,
         },
     };
 }
@@ -888,6 +1006,13 @@ pub fn extractModule(
             .fn_proto,
             => {
                 const sym = try extractFnSymbol(allocator, tree, decl_index);
+                errdefer deinitSymbol(allocator, @constCast(&sym));
+                try module.symbols.append(allocator, sym);
+            },
+
+            // --- comptime blocks ---
+            .@"comptime" => {
+                const sym = try extractComptimeBlockSymbol(allocator, tree, decl_index);
                 errdefer deinitSymbol(allocator, @constCast(&sym));
                 try module.symbols.append(allocator, sym);
             },
