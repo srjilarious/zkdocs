@@ -1,6 +1,6 @@
 .{
     .name = .zkdocs,
-    .version = "0.9.1",
+    .version = "0.9.2",
     .fingerprint = 0x858a3df34daf0ee0,
     .minimum_zig_version = "0.16.0",
     .paths = .{"."},
