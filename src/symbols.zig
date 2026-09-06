@@ -124,6 +124,9 @@ pub const Symbol = union(SymbolKind) {
 
 pub const Module = struct {
     name: []const u8,
+    /// URL/file slug for this module's API page. Defaults to `name`, but
+    /// duplicate basenames are disambiguated from the relative source path.
+    slug: []const u8,
     /// Display path shown in the generated HTML (relative to the root source dir).
     path: []const u8,
     /// Absolute filesystem path; used for build-cache mtime tracking.
@@ -132,6 +135,9 @@ pub const Module = struct {
     /// Name of the module that directly imported this one, or null for roots.
     /// Heap-allocated; freed by deinitModule.
     parent_name: ?[]const u8 = null,
+    /// Absolute path of the module that directly imported this one, or null
+    /// for roots. This is the real tree identity; names are not unique.
+    parent_abs_path: ?[]const u8 = null,
     /// File-level `//!` doc comment, joined into a single string.
     /// Heap-allocated; freed by deinitModule.
     doc: ?[]const u8 = null,
@@ -982,6 +988,7 @@ pub fn extractModule(
 
     var module: Module = .{
         .name = try allocator.dupe(u8, module_name),
+        .slug = try allocator.dupe(u8, module_name),
         .path = try allocator.dupe(u8, file_path),
         .abs_path = try allocator.dupe(u8, abs_file_path),
         .symbols = .empty,
@@ -989,7 +996,9 @@ pub fn extractModule(
     };
     errdefer {
         allocator.free(module.name);
+        allocator.free(module.slug);
         allocator.free(module.path);
+        allocator.free(module.abs_path);
         module.symbols.deinit(allocator);
     }
 
@@ -1102,9 +1111,11 @@ pub fn extractModule(
 
 pub fn deinitModule(allocator: std.mem.Allocator, module: *Module) void {
     allocator.free(module.name);
+    allocator.free(module.slug);
     allocator.free(module.path);
     allocator.free(module.abs_path);
     if (module.parent_name) |pn| allocator.free(pn);
+    if (module.parent_abs_path) |pp| allocator.free(pp);
     if (module.doc) |d| allocator.free(d);
     for (module.symbols.items) |*sym| deinitSymbol(allocator, sym);
     module.symbols.deinit(allocator);
@@ -1163,6 +1174,7 @@ fn extractModuleGraphRecurse(
     modules: *std.ArrayList(Module),
     visited: *std.StringHashMap(void),
     parent_name: ?[]const u8,
+    parent_abs_path: ?[]const u8,
 ) !void {
     // Resolve to an absolute path so symlinks / ".." don't create duplicates.
     const abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| {
@@ -1205,6 +1217,7 @@ fn extractModuleGraphRecurse(
     var module_owned = false;
     errdefer if (!module_owned) deinitModule(allocator, &module);
     module.parent_name = if (parent_name) |pn| try allocator.dupe(u8, pn) else null;
+    module.parent_abs_path = if (parent_abs_path) |pp| try allocator.dupe(u8, pp) else null;
     try modules.append(allocator, module);
     module_owned = true;
 
@@ -1218,7 +1231,57 @@ fn extractModuleGraphRecurse(
     try collectRelativeImports(allocator, tree, dir_path, &import_paths);
 
     for (import_paths.items) |import_path| {
-        try extractModuleGraphRecurse(io, allocator, import_path, root_dir, modules, visited, module_name);
+        try extractModuleGraphRecurse(io, allocator, import_path, root_dir, modules, visited, module_name, abs_path);
+    }
+}
+
+fn moduleNameIsDuplicate(modules: []const Module, index: usize) bool {
+    for (modules, 0..) |mod, i| {
+        if (i != index and std.mem.eql(u8, mod.name, modules[index].name)) return true;
+    }
+    return false;
+}
+
+fn pathSlug(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const without_ext = if (std.mem.endsWith(u8, path, ".zig"))
+        path[0 .. path.len - ".zig".len]
+    else
+        path;
+
+    const slug = try allocator.dupe(u8, without_ext);
+    for (slug) |*c| {
+        if (c.* == '/' or c.* == '\\' or c.* == std.fs.path.sep) c.* = '_';
+    }
+    return slug;
+}
+
+fn slugExistsBefore(modules: []const Module, index: usize) bool {
+    for (modules[0..index]) |mod| {
+        if (std.mem.eql(u8, mod.slug, modules[index].slug)) return true;
+    }
+    return false;
+}
+
+fn makeModuleSlugsUnique(allocator: std.mem.Allocator, modules: []Module) !void {
+    for (modules, 0..) |*mod, i| {
+        if (moduleNameIsDuplicate(modules, i)) {
+            const slug = try pathSlug(allocator, mod.path);
+            allocator.free(mod.slug);
+            mod.slug = slug;
+        }
+    }
+
+    for (modules, 0..) |*mod, i| {
+        if (!slugExistsBefore(modules, i)) continue;
+        const base = try allocator.dupe(u8, mod.slug);
+        defer allocator.free(base);
+
+        var suffix: usize = 2;
+        while (slugExistsBefore(modules, i)) : (suffix += 1) {
+            const slug = try std.fmt.allocPrint(allocator, "{s}-{d}", .{ base, suffix });
+            allocator.free(mod.slug);
+            mod.slug = slug;
+        }
     }
 }
 
@@ -1248,11 +1311,13 @@ pub fn extractModuleGraph(
     defer allocator.free(abs_root);
     const root_dir = std.fs.path.dirname(abs_root) orelse ".";
 
-    try extractModuleGraphRecurse(io, allocator, root_path, root_dir, &modules, &visited, null);
+    try extractModuleGraphRecurse(io, allocator, root_path, root_dir, &modules, &visited, null, null);
+    try makeModuleSlugsUnique(allocator, modules.items);
     const slice = try modules.toOwnedSlice(allocator);
     // Sort alphabetically by name so each sidebar level is ordered consistently.
     std.mem.sort(Module, slice, {}, struct {
         fn lessThan(_: void, a: Module, b: Module) bool {
+            if (std.mem.eql(u8, a.name, b.name)) return std.mem.lessThan(u8, a.slug, b.slug);
             return std.mem.lessThan(u8, a.name, b.name);
         }
     }.lessThan);

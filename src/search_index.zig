@@ -97,7 +97,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
             switch (sym) {
                 .function => |f| {
                     if (f.is_pub) {
-                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, f.name });
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.slug, f.name });
                         defer ctx.allocator.free(url);
                         if (id > 0) try buf.append(ctx.allocator, ',');
                         try appendSearchDoc(&buf, ctx.allocator, id, f.name, f.doc orelse "", url, "api");
@@ -106,7 +106,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                 },
                 .container => |c| {
                     if (c.is_pub) {
-                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, c.name });
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.slug, c.name });
                         defer ctx.allocator.free(url);
                         if (id > 0) try buf.append(ctx.allocator, ',');
                         try appendSearchDoc(&buf, ctx.allocator, id, c.name, c.doc orelse "", url, "api");
@@ -115,7 +115,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                 },
                 .variable => |v| {
                     if (v.is_pub) {
-                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, v.name });
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.slug, v.name });
                         defer ctx.allocator.free(url);
                         if (id > 0) try buf.append(ctx.allocator, ',');
                         try appendSearchDoc(&buf, ctx.allocator, id, v.name, v.doc orelse "", url, "api");
@@ -124,7 +124,7 @@ pub fn writeSearchIndex(ctx: *const SiteContext, out_dir: *std.Io.Dir) !void {
                 },
                 .error_set => |e| {
                     if (e.is_pub) {
-                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.name, e.name });
+                        const url = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html#sym-{s}", .{ mod.slug, e.name });
                         defer ctx.allocator.free(url);
                         if (id > 0) try buf.append(ctx.allocator, ',');
                         try appendSearchDoc(&buf, ctx.allocator, id, e.name, e.doc orelse "", url, "api");

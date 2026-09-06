@@ -114,17 +114,17 @@ fn writeModuleNavItem(
     active_module: ?[]const u8,
     prefix: []const u8,
 ) !void {
-    const active = if (active_module) |am| std.mem.eql(u8, am, mod.name) else false;
+    const active = if (active_module) |am| std.mem.eql(u8, am, mod.slug) else false;
     const cls: []const u8 = if (active) " class=\"active\"" else "";
-    try buf.print("<li><a href=\"{s}/api/{s}.html\"{s}>", .{ prefix, mod.name, cls });
+    try buf.print("<li><a href=\"{s}/api/{s}.html\"{s}>", .{ prefix, mod.slug, cls });
     try htmlEscape(buf, mod.name);
     try buf.writeAll("</a>");
 
-    // Emit children (modules whose parent_name == this module's name).
+    // Emit children by parent path; module basenames are not unique.
     var has_children = false;
     for (ctx.mods) |child| {
-        if (child.parent_name) |pn| {
-            if (std.mem.eql(u8, pn, mod.name)) {
+        if (child.parent_abs_path) |parent_path| {
+            if (std.mem.eql(u8, parent_path, mod.abs_path)) {
                 has_children = true;
                 break;
             }
@@ -133,8 +133,8 @@ fn writeModuleNavItem(
     if (has_children) {
         try buf.writeAll("\n<ul class=\"nav-children\">\n");
         for (ctx.mods) |child| {
-            if (child.parent_name) |pn| {
-                if (std.mem.eql(u8, pn, mod.name))
+            if (child.parent_abs_path) |parent_path| {
+                if (std.mem.eql(u8, parent_path, mod.abs_path))
                     try writeModuleNavItem(buf, ctx, child, active_module, prefix);
             }
         }
@@ -267,7 +267,7 @@ pub fn writeHeader(
         try buf.writeAll("<details class=\"nav-section\" open>\n<summary>Modules</summary>\n<ul>\n");
         for (ctx.mods) |mod| {
             // Only render top-level (root) modules here; children are nested inside their parent.
-            if (mod.parent_name == null)
+            if (mod.parent_abs_path == null)
                 try writeModuleNavItem(buf, ctx, mod, active_module, prefix);
         }
         try buf.writeAll("</ul>\n</details>\n");

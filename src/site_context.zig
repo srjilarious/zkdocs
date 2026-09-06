@@ -24,7 +24,7 @@ pub const Progress = progress_mod.Progress;
 
 /// Points to where a named type is defined.
 pub const TypeRef = struct {
-    module_name: []const u8, // e.g. "math" → api/math.html
+    module_name: []const u8, // module slug, e.g. "math" → api/math.html
     anchor_name: []const u8, // the `sym-<name>` id on that page
 };
 
@@ -40,19 +40,19 @@ pub fn buildTypeIndex(allocator: std.mem.Allocator, mods: []const symbols.Module
             switch (sym) {
                 .container => |c| {
                     if (c.is_pub) try idx.put(c.name, .{
-                        .module_name = mod.name,
+                        .module_name = mod.slug,
                         .anchor_name = c.name,
                     });
                 },
                 .function => |f| {
                     if (f.is_pub and f.generic_return != null) try idx.put(f.name, .{
-                        .module_name = mod.name,
+                        .module_name = mod.slug,
                         .anchor_name = f.name,
                     });
                 },
                 .error_set => |e| {
                     if (e.is_pub) try idx.put(e.name, .{
-                        .module_name = mod.name,
+                        .module_name = mod.slug,
                         .anchor_name = e.name,
                     });
                 },

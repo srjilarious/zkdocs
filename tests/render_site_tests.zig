@@ -10,6 +10,12 @@ const symbols = zkdocs.symbols;
 const render = zkdocs.render;
 const fix = @import("fixtures.zig");
 
+fn writeTextFile(path: []const u8, contents: []const u8) !void {
+    const f = try std.Io.Dir.cwd().createFile(fix.g_Io, path, .{});
+    defer f.close(fix.g_Io);
+    try f.writeStreamingAll(fix.g_Io, contents);
+}
+
 /// Builds a `Section -> Section -> entry` tree. The leaf entry's
 /// `src_path` points at a real repo file (`sample.zig`) so cache
 /// recording has something real to stat.
@@ -377,4 +383,107 @@ pub fn combinedImageAndLinkRewriteBothResolve() !void {
     const copied = try std.Io.Dir.cwd().readFileAlloc(fix.g_Io, copied_path, gpa, .limited(1024));
     defer gpa.free(copied);
     try testz.expectEqualStr(copied, "not a real png, just needs to exist");
+}
+
+pub fn duplicateModuleBasenamesDoNotRecurseOrOverwriteApiPages() !void {
+    const gpa = std.heap.page_allocator;
+
+    const src_dir = "test_tmp_render_duplicate_module_names_src";
+    const out_dir = "test_tmp_render_duplicate_module_names_out";
+    std.Io.Dir.cwd().deleteTree(fix.g_Io, src_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(fix.g_Io, out_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(fix.g_Io, src_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(fix.g_Io, out_dir) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(fix.g_Io, src_dir ++ "/input");
+    try std.Io.Dir.cwd().createDirPath(fix.g_Io, src_dir ++ "/platform");
+
+    try writeTextFile(src_dir ++ "/root.zig",
+        \\//! Root module.
+        \\pub const input = @import("./input.zig");
+        \\pub const platform = @import("./platform.zig");
+        \\
+    );
+    try writeTextFile(src_dir ++ "/input.zig",
+        \\//! Input module.
+        \\pub const manager = @import("./input/manager.zig");
+        \\
+    );
+    try writeTextFile(src_dir ++ "/input/manager.zig",
+        \\//! Manager module.
+        \\pub const windowing = @import("../window.zig");
+        \\
+    );
+    try writeTextFile(src_dir ++ "/window.zig",
+        \\//! Root window module.
+        \\pub const RootWindow = struct {};
+        \\pub const platform = @import("./platform.zig");
+        \\
+    );
+    try writeTextFile(src_dir ++ "/platform.zig",
+        \\//! Platform module.
+        \\pub const window = @import("./platform/window.zig");
+        \\
+    );
+    try writeTextFile(src_dir ++ "/platform/window.zig",
+        \\//! Platform window module.
+        \\pub const PlatformWindow = struct {};
+        \\
+    );
+
+    const mods = try symbols.extractModuleGraph(fix.g_Io, gpa, src_dir ++ "/root.zig");
+    defer symbols.deinitModules(gpa, mods);
+
+    var saw_root_window = false;
+    var saw_platform_window = false;
+    for (mods) |mod| {
+        if (std.mem.eql(u8, mod.path, "window.zig")) {
+            saw_root_window = true;
+            try testz.expectEqualStr(mod.slug, "window");
+        } else if (std.mem.eql(u8, mod.path, "platform/window.zig")) {
+            saw_platform_window = true;
+            try testz.expectEqualStr(mod.slug, "platform_window");
+        }
+    }
+    try testz.expectTrue(saw_root_window);
+    try testz.expectTrue(saw_platform_window);
+
+    var progress = render.Progress.init(10);
+    var cache = render.cache_mod.Cache.init(fix.g_Io, gpa);
+    defer cache.deinit();
+
+    try render.renderSite(fix.g_Io, gpa, .{
+        .out_path = out_dir,
+        .project_name = "Test",
+        .mods = mods,
+        .pages = &.{},
+        .emoji_provider = .unicode,
+        .theme = .default,
+        .progress = &progress,
+        .conf_dir = null,
+        .home_slug = null,
+        .cache = &cache,
+        .conf_abs_path = null,
+        .show_imports = false,
+        .repo_url = null,
+        .extra_css = &.{},
+        .header_html = null,
+        .footer_html = null,
+        .logo = null,
+        .favicon = null,
+        .base_url = null,
+    });
+
+    const root_window = try std.Io.Dir.cwd().readFileAlloc(fix.g_Io, out_dir ++ "/api/window.html", gpa, .limited(64 * 1024));
+    defer gpa.free(root_window);
+    try testz.expectTrue(std.mem.indexOf(u8, root_window, "Root window module.") != null);
+
+    const platform_window = try std.Io.Dir.cwd().readFileAlloc(fix.g_Io, out_dir ++ "/api/platform_window.html", gpa, .limited(64 * 1024));
+    defer gpa.free(platform_window);
+    try testz.expectTrue(std.mem.indexOf(u8, platform_window, "Platform window module.") != null);
+
+    const index = try std.Io.Dir.cwd().readFileAlloc(fix.g_Io, out_dir ++ "/index.html", gpa, .limited(64 * 1024));
+    defer gpa.free(index);
+    try testz.expectTrue(std.mem.indexOf(u8, index, "href=\"./api/window.html\"") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, index, "href=\"./api/platform_window.html\"") != null);
 }

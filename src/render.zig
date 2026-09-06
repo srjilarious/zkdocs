@@ -97,7 +97,7 @@ pub const RenderSiteOptions = struct {
 };
 
 /// `Io.Group.async` entry point for `renderModulePage`: renders one module's
-/// `api/<module>.html` on a pool thread, recording failure via `failed`
+/// `api/<module-slug>.html` on a pool thread, recording failure via `failed`
 /// instead of propagating the error (the group has no per-task error channel).
 fn renderModuleJob(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.Module, failed: *std.atomic.Value(bool)) void {
     renderModulePage(ctx, out_dir, mod) catch |err| {
@@ -106,7 +106,7 @@ fn renderModuleJob(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.M
     };
 }
 
-/// Render a single module's `api/<module>.html`. Reads only shared,
+/// Render a single module's `api/<module-slug>.html`. Reads only shared,
 /// already-built state off `ctx` (type index, cache, mods list) so it is
 /// safe to call concurrently for different modules.
 fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.Module) !void {
@@ -117,14 +117,14 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
     const title = try std.fmt.allocPrint(ctx.allocator, "{s} — {s}", .{ mod.name, ctx.project_name });
     defer ctx.allocator.free(title);
 
-    try page_render.writeHeader(&buf, ctx, title, mod.name, null, site_context.prefixFor(ctx, ".."));
+    try page_render.writeHeader(&buf, ctx, title, mod.slug, null, site_context.prefixFor(ctx, ".."));
 
     try buf.writeAll("<h1>");
     try htmlEscape(&buf, mod.name);
     try buf.writeAll("</h1>\n<div class=\"mod-path\">");
     try htmlEscape(&buf, mod.path);
     try buf.writeAll("</div>\n");
-    if (mod.doc) |doc| try page_render.writeDoc(&buf, ctx, mod.name, doc);
+    if (mod.doc) |doc| try page_render.writeDoc(&buf, ctx, mod.slug, doc);
 
     var has_types = false;
     var has_errors = false;
@@ -165,19 +165,19 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
         try buf.writeAll("<h2 id=\"section-types\">Types</h2>\n");
         for (mod.symbols.items) |sym| {
             if (sym == .container and sym.container.is_pub)
-                try page_render.renderContainer(&buf, ctx, mod.name, sym.container);
+                try page_render.renderContainer(&buf, ctx, mod.slug, sym.container);
         }
         for (mod.symbols.items) |sym| {
             if (sym != .function) continue;
             const f = sym.function;
-            if (f.is_pub and f.generic_return != null) try page_render.renderFn(&buf, ctx, mod.name, f, null);
+            if (f.is_pub and f.generic_return != null) try page_render.renderFn(&buf, ctx, mod.slug, f, null);
         }
     }
     if (has_errors) {
         try buf.writeAll("<h2 id=\"section-errors\">Errors</h2>\n");
         for (mod.symbols.items) |sym| {
             if (sym == .error_set and sym.error_set.is_pub)
-                try page_render.renderErrorSet(&buf, ctx, mod.name, sym.error_set);
+                try page_render.renderErrorSet(&buf, ctx, mod.slug, sym.error_set);
         }
     }
     if (has_fns) {
@@ -185,7 +185,7 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
         for (mod.symbols.items) |sym| {
             if (sym == .function) {
                 const f = sym.function;
-                if (f.is_pub and f.generic_return == null) try page_render.renderFn(&buf, ctx, mod.name, f, null);
+                if (f.is_pub and f.generic_return == null) try page_render.renderFn(&buf, ctx, mod.slug, f, null);
             }
         }
     }
@@ -194,7 +194,7 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
         for (mod.symbols.items) |sym| {
             if (sym == .variable) {
                 const v = sym.variable;
-                if (v.is_pub and (ctx.show_imports or !v.is_import)) try page_render.renderVar(&buf, ctx, mod.name, v);
+                if (v.is_pub and (ctx.show_imports or !v.is_import)) try page_render.renderVar(&buf, ctx, mod.slug, v);
             }
         }
     }
@@ -203,7 +203,7 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
         var cb_index: usize = 0;
         for (mod.symbols.items) |sym| {
             if (sym == .comptime_block) {
-                try page_render.renderComptimeBlock(&buf, ctx, mod.name, cb_index, sym.comptime_block);
+                try page_render.renderComptimeBlock(&buf, ctx, mod.slug, cb_index, sym.comptime_block);
                 cb_index += 1;
             }
         }
@@ -212,7 +212,7 @@ fn renderModulePage(ctx: *const SiteContext, out_dir: *std.Io.Dir, mod: symbols.
     try page_render.writeApiToc(&buf, ctx, mod);
     try page_render.writeFooter(&buf, ctx);
 
-    const filename = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html", .{mod.name});
+    const filename = try std.fmt.allocPrint(ctx.allocator, "api/{s}.html", .{mod.slug});
     defer ctx.allocator.free(filename);
     const file = try out_dir.createFile(ctx.io, filename, .{});
     defer file.close(ctx.io);
@@ -396,7 +396,7 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
             if (ctx.mods.len > 0) {
                 try buf.writeAll("<h2>Modules</h2>\n<ul class=\"module-list\">\n");
                 for (ctx.mods) |mod| {
-                    try buf.print("<li><a href=\"./api/{s}.html\">", .{mod.name});
+                    try buf.print("<li><a href=\"./api/{s}.html\">", .{mod.slug});
                     try htmlEscape(&buf, mod.name);
                     try buf.writeAll("</a>");
 

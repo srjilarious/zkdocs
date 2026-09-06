@@ -146,6 +146,17 @@ const SymbolRef = struct {
     name: []const u8,
 };
 
+fn moduleMatches(mod: symbols.Module, query: []const u8) bool {
+    return std.mem.eql(u8, mod.name, query) or std.mem.eql(u8, mod.slug, query);
+}
+
+fn moduleSlugFor(mods: []const symbols.Module, query: []const u8) ?[]const u8 {
+    for (mods) |mod| {
+        if (moduleMatches(mod, query)) return mod.slug;
+    }
+    return null;
+}
+
 /// Returns the symbol's name if it's a public function/variable/container,
 /// null otherwise (private, or a `test`/`other` symbol with no linkable name).
 fn pubSymbolName(sym: symbols.Symbol) ?[]const u8 {
@@ -165,12 +176,12 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
 
         // Check if lhs is a module name first.
         for (mods) |mod| {
-            if (std.mem.eql(u8, mod.name, lhs)) {
+            if (moduleMatches(mod, lhs)) {
                 // module.Symbol — look up the symbol within this module only.
                 for (mod.symbols.items) |sym| {
                     if (pubSymbolName(sym)) |n| {
                         if (std.mem.eql(u8, n, rhs))
-                            return .{ .module_name = mod.name, .name = n };
+                            return .{ .module_name = mod.slug, .name = n };
                     }
                 }
                 return null; // module found but symbol not in it
@@ -183,7 +194,7 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
                 if (sym == .container) {
                     const c = sym.container;
                     if (c.is_pub and std.mem.eql(u8, c.name, lhs)) {
-                        return .{ .module_name = mod.name, .container = c.name, .name = rhs };
+                        return .{ .module_name = mod.slug, .container = c.name, .name = rhs };
                     }
                 }
             }
@@ -196,7 +207,7 @@ fn findSymbolRef(mods: []const symbols.Module, target: []const u8) ?SymbolRef {
         for (mod.symbols.items) |sym| {
             if (pubSymbolName(sym)) |n| {
                 if (std.mem.eql(u8, n, target))
-                    return .{ .module_name = mod.name, .name = n };
+                    return .{ .module_name = mod.slug, .name = n };
             }
         }
     }
@@ -395,7 +406,8 @@ pub fn rewriteAttributes(
                 }
             },
             .mod => {
-                const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html", .{ prefix, value });
+                const module_slug = moduleSlugFor(mods, value) orelse value;
+                const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/api/{s}.html", .{ prefix, module_slug });
                 defer allocator.free(lnk);
                 try out.appendSlice(allocator, lnk);
             },
