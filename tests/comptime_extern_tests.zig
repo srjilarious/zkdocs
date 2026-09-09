@@ -127,9 +127,9 @@ pub fn commentDocOnComptimeBlockStillExtracted() !void {
         \\}
         \\
     ;
-    const src_z = try gpa.dupeZ(u8, src);
+    const src_z = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
     defer gpa.free(src_z);
-    var tree = try std.zig.Ast.parse(gpa, src_z, .zig);
+    var tree = try std.zig.Ast.parse(gpa, src_z, .{ .mode = .zig });
     defer tree.deinit(gpa);
 
     var module = try symbols.extractModule(gpa, &tree, "inline_mod", "inline_mod.zig", "inline_mod.zig");

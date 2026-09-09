@@ -82,13 +82,13 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     const run_step = b.step("run", "Run zkdocs");
     run_step.dependOn(&run_cmd.step);
 
     const tests_exe = b.addExecutable(.{
         .name = "tests",
-        .root_module = b.addModule("main", .{
+        .root_module = b.createModule(.{
             .root_source_file = b.path("tests/main.zig"),
             .target = target,
             .optimize = optimize,
@@ -98,7 +98,7 @@ pub fn build(b: *std.Build) void {
     tests_exe.root_module.addImport("zkdocs", exe.root_module);
 
     const tests_run = b.addRunArtifact(tests_exe);
-    if (b.args) |args| tests_run.addArgs(args);
+    tests_run.addPassthruArgs();
     const tests_step = b.step("tests", "Run unit tests");
     tests_step.dependOn(&tests_run.step);
 

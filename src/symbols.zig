@@ -1194,11 +1194,11 @@ fn extractModuleGraphRecurse(
         return err;
     };
     defer allocator.free(source);
-    const source_z = try allocator.dupeZ(u8, source);
+    const source_z = try std.mem.concatWithSentinel(allocator, u8, &.{source}, 0);
     defer allocator.free(source_z);
 
     // Parse.
-    var tree = try std.zig.Ast.parse(allocator, source_z, .zig);
+    var tree = try std.zig.Ast.parse(allocator, source_z, .{ .mode = .zig });
     defer tree.deinit(allocator);
 
     // Derive module name from the file stem.
