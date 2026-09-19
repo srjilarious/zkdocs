@@ -2,8 +2,8 @@
 
 ![Logo](docs/assets/logo.png)
 
-![Version Badge](https://img.shields.io/badge/Version-0.9.0-brightgreen)
-![Zig Version Badge](https://img.shields.io/badge/Zig%20Version-0.16.0-%23f7a41d?logo=zig)
+![Version Badge](https://img.shields.io/badge/Version-0.10.0-brightgreen)
+![Zig Version Badge](https://img.shields.io/badge/Zig%20Version-0.17.0--dev.1857%2B3c46da14d-%23f7a41d?logo=zig)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 Zkdocs is a document site generator in the style of mkdocs, but intended for zig projects.  I wanted a tool that could give me similar features like I'm used to with mkdocs with the mkdocs-material extension.
