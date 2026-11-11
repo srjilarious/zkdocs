@@ -2,8 +2,10 @@ const std = @import("std");
 const ts = @import("tree_sitter");
 const ts_zig = @import("tree-sitter-zig");
 const ts_json = @import("tree-sitter-json");
+const ts_python = @import("tree-sitter-python");
 
 const highlights_zig = @embedFile("assets/highlights.scm");
+const highlights_python = @embedFile("assets/highlights_python.scm");
 
 const highlights_json =
     \\(pair key: (_) @string.special.key)
@@ -28,6 +30,7 @@ const RenderMode = enum { html, ansi };
 pub fn highlight(allocator: std.mem.Allocator, lang: []const u8, source: []const u8) ![]const u8 {
     if (std.mem.eql(u8, lang, "zig")) return highlightWith(allocator, ts_zig.language(), highlights_zig, source, .html);
     if (std.mem.eql(u8, lang, "json")) return highlightWith(allocator, ts_json.language(), highlights_json, source, .html);
+    if (isPython(lang)) return highlightWith(allocator, ts_python.language(), highlights_python, source, .html);
     return escapedOnly(allocator, source);
 }
 
@@ -42,7 +45,13 @@ pub fn highlightZig(allocator: std.mem.Allocator, source: []const u8) ![]const u
 pub fn highlightAnsi(allocator: std.mem.Allocator, lang: []const u8, source: []const u8) ![]const u8 {
     if (std.mem.eql(u8, lang, "zig")) return highlightWith(allocator, ts_zig.language(), highlights_zig, source, .ansi);
     if (std.mem.eql(u8, lang, "json")) return highlightWith(allocator, ts_json.language(), highlights_json, source, .ansi);
+    if (isPython(lang)) return highlightWith(allocator, ts_python.language(), highlights_python, source, .ansi);
     return allocator.dupe(u8, source);
+}
+
+/// Fence tags that select the Python grammar.
+fn isPython(lang: []const u8) bool {
+    return std.mem.eql(u8, lang, "python") or std.mem.eql(u8, lang, "py");
 }
 
 fn highlightWith(

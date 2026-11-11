@@ -1,5 +1,5 @@
 //* These tests cover `highlight.zig` (tree-sitter syntax highlighting), which
-//* had no test coverage at all: the tree-sitter Zig path, the JSON path, and
+//* had no test coverage at all: the tree-sitter Zig path, the JSON and Python paths, and
 //* the escaped-plain-text fallback for a language with no grammar.
 const std = @import("std");
 const testz = @import("testz");
@@ -30,7 +30,7 @@ pub fn zigHighlightEscapesHtmlInStringLiterals() !void {
 pub fn unknownLanguageFallsBackToEscapedPlainText() !void {
     const gpa = std.heap.page_allocator;
 
-    const html = try highlight.highlight(gpa, "python", "<script>alert(1)</script>");
+    const html = try highlight.highlight(gpa, "lua", "<script>alert(1)</script>");
     defer gpa.free(html);
 
     try testz.expectTrue(std.mem.indexOf(u8, html, "&lt;script&gt;") != null);
@@ -75,8 +75,39 @@ pub fn ansiHighlightDoesNotHtmlEscapeStringLiterals() !void {
 pub fn ansiUnknownLanguageFallsBackToRawSource() !void {
     const gpa = std.heap.page_allocator;
 
-    const ansi = try highlight.highlightAnsi(gpa, "python", "<script>alert(1)</script>");
+    const ansi = try highlight.highlightAnsi(gpa, "lua", "<script>alert(1)</script>");
     defer gpa.free(ansi);
 
     try testz.expectEqualStr(ansi, "<script>alert(1)</script>");
+}
+
+pub fn pythonHighlightsKeywordsStringsAndFunctions() !void {
+    const gpa = std.heap.page_allocator;
+
+    const html = try highlight.highlight(gpa, "python", "def jump(self):\n    print(\"<hi>\")  # go\n");
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<span class=\"hl-keyword\">def</span>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<span class=\"hl-function\">jump</span>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "hl-string") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "hl-comment") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "&lt;hi&gt;") != null);
+}
+
+pub fn pyFenceTagSelectsPythonGrammar() !void {
+    const gpa = std.heap.page_allocator;
+
+    const html = try highlight.highlight(gpa, "py", "x = None");
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<span class=\"hl-constant\">None</span>") != null);
+}
+
+pub fn ansiHighlightColorsPythonKeywords() !void {
+    const gpa = std.heap.page_allocator;
+
+    const ansi = try highlight.highlightAnsi(gpa, "python", "return 1");
+    defer gpa.free(ansi);
+
+    try testz.expectTrue(std.mem.indexOf(u8, ansi, "\x1b[35mreturn") != null);
 }

@@ -434,6 +434,42 @@ details.fn-body > pre {
 .guide-content ul,.guide-content ol { padding-left: 1.75rem; margin: 0 0 1rem; }
 .guide-content li { margin-bottom: .3rem; }
 
+/* ── Content tabs ── */
+.tabbed-set {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 1rem 0;
+  overflow: hidden;
+}
+.tabbed-labels {
+  display: flex;
+  overflow-x: auto;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+.tabbed-label {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: .85rem;
+  font-weight: 600;
+  padding: .45rem 1rem;
+  white-space: nowrap;
+}
+.tabbed-label:hover { color: var(--text); }
+.tabbed-label.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tabbed-label:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tabbed-block { padding: .75rem 1rem; }
+.tabbed-block[hidden] { display: none; }
+.tabbed-block > *:first-child { margin-top: 0; }
+.tabbed-block > *:last-child { margin-bottom: 0; }
+/* A tab that is only a code block shows the code edge to edge. */
+.tabbed-block:has(> pre:only-child) { padding: 0; }
+.tabbed-block > pre:only-child { margin: 0; border-radius: 0; }
+
 /* ── Admonitions ── */
 .admonition, details.admonition {
   border-left: 4px solid var(--admon-color, #7a7a9a);

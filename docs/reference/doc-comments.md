@@ -22,7 +22,7 @@ Doc comment content is rendered as Markdown. You can use:
 
 - **Bold** and _italic_
 - `` `inline code` ``
-- Fenced code blocks (with Zig syntax highlighting)
+- Fenced code blocks (with Zig, Python and JSON syntax highlighting)
 - Links, lists, and blockquotes
 
 Example:

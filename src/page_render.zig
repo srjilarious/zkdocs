@@ -215,10 +215,11 @@ pub fn writeHeader(
         \\<script src="{s}/assets/minisearch.min.js" defer></script>
         \\<script src="{s}/assets/search-data.js" defer></script>
         \\<script src="{s}/assets/search.js" defer></script>
+        \\<script src="{s}/assets/tabs.js" defer></script>
         \\</head>
         \\<body>
         \\<a class="skip-link" href="#main-content">Skip to main content</a>
-    , .{ prefix, prefix, prefix, prefix });
+    , .{ prefix, prefix, prefix, prefix, prefix });
     if (ctx.header_html) |hh| try buf.writeAll(hh);
     // Mobile top bar
     try buf.print(

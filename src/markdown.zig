@@ -4,9 +4,10 @@ pub const highlight = @import("./highlight.zig");
 
 /// Render `markdown` to an HTML fragment (no DOCTYPE/html/body wrapper).
 pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror![]const u8 {
-    // Extract admonitions first, since bodies are rendered recursively.
-    // Tables are handled natively by zmd (see zmd/Ast.zig's parseTable), so
-    // unlike admonitions they need no separate extract/restore pass here.
+    // Extract admonitions and tab groups first, since bodies are rendered
+    // recursively. Tables are handled natively by zmd (see zmd/Ast.zig's
+    // parseTable), so unlike these they need no separate extract/restore
+    // pass here.
     var admonitions: std.ArrayList([]const u8) = .empty;
     defer {
         for (admonitions.items) |a| allocator.free(a);
@@ -113,10 +114,10 @@ pub const FenceTracker = struct {
     }
 };
 
-// ── Block extraction (admonitions) ────────────────────────────────────────────
+// ── Block extraction (admonitions and tab groups) ─────────────────────────────
 // GFM tables are handled natively by zmd (see zmd/Ast.zig's parseTable) and
-// no longer need an extract/restore pass here. Admonitions still do, since
-// zmd has no concept of them.
+// no longer need an extract/restore pass here. Admonitions and tab groups
+// still do, since zmd has no concept of them; both share one sentinel list.
 
 // Sentinel prefix embedded in the stripped markdown so we can find and swap
 // back later. Chosen to be unlikely in normal doc text.
@@ -201,6 +202,16 @@ fn extractAdmonitions(
             continue;
         }
 
+        if (isTabHeader(line)) {
+            const html = try renderTabGroup(allocator, lines.items, &i);
+            const idx = out_admonitions.items.len;
+            try out_admonitions.append(allocator, html);
+            const tab_sentinel = try std.fmt.allocPrint(allocator, "\n\n{s}{d}\n\n", .{ admonition_sentinel_prefix, idx });
+            defer allocator.free(tab_sentinel);
+            try result.appendSlice(allocator, tab_sentinel);
+            continue;
+        }
+
         const collapsible = std.mem.startsWith(u8, line, "??? ");
         const is_admon = std.mem.startsWith(u8, line, "!!! ") or collapsible;
 
@@ -220,28 +231,11 @@ fn extractAdmonitions(
             }
 
             // Collect body lines (each indented by 4 spaces; blank lines pass through).
-            var body: std.ArrayList(u8) = .empty;
-            errdefer body.deinit(allocator);
             i += 1;
-            while (i < lines.items.len) {
-                const body_line = lines.items[i];
-                if (body_line.len == 0) {
-                    try body.append(allocator, '\n');
-                    i += 1;
-                    continue;
-                }
-                if (std.mem.startsWith(u8, body_line, "    ")) {
-                    try body.appendSlice(allocator, body_line[4..]);
-                    try body.append(allocator, '\n');
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
+            const body_md = try collectIndentedBody(allocator, lines.items, &i);
+            defer allocator.free(body_md);
 
             // Render the body as HTML (recursive call handles nested markdown).
-            const body_md = try body.toOwnedSlice(allocator);
-            defer allocator.free(body_md);
             const body_html = try toHtml(allocator, body_md);
             defer allocator.free(body_html);
 
@@ -273,6 +267,109 @@ fn extractAdmonitions(
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+/// Collect the 4-space-indented body that follows an admonition or tab
+/// header, starting at `lines[i.*]`, with the indent removed. Blank lines
+/// pass through. Stops at the first non-blank line that isn't indented and
+/// leaves `i` pointing at it.
+fn collectIndentedBody(allocator: std.mem.Allocator, lines: []const []const u8, i: *usize) ![]const u8 {
+    var body: std.ArrayList(u8) = .empty;
+    errdefer body.deinit(allocator);
+    while (i.* < lines.len) {
+        const body_line = lines[i.*];
+        if (std.mem.trim(u8, body_line, " \t\r").len == 0) {
+            try body.append(allocator, '\n');
+        } else if (std.mem.startsWith(u8, body_line, "    ")) {
+            try body.appendSlice(allocator, body_line[4..]);
+            try body.append(allocator, '\n');
+        } else {
+            break;
+        }
+        i.* += 1;
+    }
+    return body.toOwnedSlice(allocator);
+}
+
+// ── Tab groups ────────────────────────────────────────────────────────────────
+
+/// A content tab header in the MkDocs Material style: `=== "Label"`.
+fn isTabHeader(line: []const u8) bool {
+    return std.mem.startsWith(u8, line, "=== ");
+}
+
+/// The label of a tab header, without its quotes.
+fn tabLabel(line: []const u8) []const u8 {
+    return std.mem.trim(u8, line[4..], " \t\r\"");
+}
+
+/// Render the run of consecutive tab headers starting at `lines[i.*]` as one
+/// tab group, and leave `i` at the first line after it. Each header's body
+/// is indented 4 spaces like an admonition's, and only blank lines may sit
+/// between one tab's body and the next header:
+///
+///     === "Zig"
+///
+///         ```zig
+///         eng.quit();
+///         ```
+///
+///     === "Python"
+///
+///         ```python
+///         self.quit()
+///         ```
+///
+/// The first tab starts selected. The page's `tabs.js` switches tabs and
+/// selects the same label in every group on the page, so picking "Python"
+/// once shows Python everywhere.
+fn renderTabGroup(allocator: std.mem.Allocator, lines: []const []const u8, i: *usize) ![]const u8 {
+    var html: std.ArrayList(u8) = .empty;
+    errdefer html.deinit(allocator);
+    var labels: std.ArrayList(u8) = .empty;
+    defer labels.deinit(allocator);
+    var panels: std.ArrayList(u8) = .empty;
+    defer panels.deinit(allocator);
+
+    var first = true;
+    while (i.* < lines.len and isTabHeader(lines[i.*])) {
+        const label = tabLabel(lines[i.*]);
+        i.* += 1;
+        const body_md = try collectIndentedBody(allocator, lines, i);
+        defer allocator.free(body_md);
+        const body_html = try toHtml(allocator, body_md);
+        defer allocator.free(body_html);
+
+        try labels.appendSlice(allocator, if (first)
+            "<button type=\"button\" class=\"tabbed-label active\" role=\"tab\" aria-selected=\"true\" data-tab=\""
+        else
+            "<button type=\"button\" class=\"tabbed-label\" role=\"tab\" aria-selected=\"false\" data-tab=\"");
+        try htmlEscapeAttrInto(&labels, allocator, label);
+        try labels.appendSlice(allocator, "\">");
+        try htmlEscapeInto(&labels, allocator, label);
+        try labels.appendSlice(allocator, "</button>");
+
+        try panels.appendSlice(allocator, "<div class=\"tabbed-block\" role=\"tabpanel\" data-tab=\"");
+        try htmlEscapeAttrInto(&panels, allocator, label);
+        try panels.appendSlice(allocator, if (first) "\">" else "\" hidden>");
+        try panels.appendSlice(allocator, body_html);
+        try panels.appendSlice(allocator, "</div>");
+        first = false;
+    }
+
+    try html.appendSlice(allocator, "<div class=\"tabbed-set\"><div class=\"tabbed-labels\" role=\"tablist\">");
+    try html.appendSlice(allocator, labels.items);
+    try html.appendSlice(allocator, "</div>");
+    try html.appendSlice(allocator, panels.items);
+    try html.appendSlice(allocator, "</div>");
+    return html.toOwnedSlice(allocator);
+}
+
+fn htmlEscapeAttrInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '"' => try out.appendSlice(allocator, "&quot;"),
+        else => try htmlEscapeInto(out, allocator, &.{c}),
+    };
 }
 
 fn titleForType(admon_type: []const u8) []const u8 {

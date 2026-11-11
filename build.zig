@@ -53,12 +53,34 @@ pub fn build(b: *std.Build) void {
     });
     json_grammar_mod.linkLibrary(json_grammar_lib);
 
+    // Python grammar (vendored from tree-sitter-python v0.23.6, like JSON)
+    const python_grammar_lib = b.addLibrary(.{
+        .name = "tree-sitter-python",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    python_grammar_lib.root_module.addCSourceFiles(.{
+        .files = &.{ "src/grammars/python/parser.c", "src/grammars/python/scanner.c" },
+        .flags = &.{"-std=c11"},
+    });
+    python_grammar_lib.root_module.addIncludePath(b.path("src/grammars/python"));
+
+    const python_grammar_mod = b.addModule("tree-sitter-python", .{
+        .root_source_file = b.path("src/grammars/python.zig"),
+    });
+    python_grammar_mod.linkLibrary(python_grammar_lib);
+
     const highlight_mod = b.addModule("highlight", .{
         .root_source_file = b.path("src/highlight.zig"),
     });
     highlight_mod.addImport("tree_sitter", tree_sitter_dep.module("tree_sitter"));
     highlight_mod.addImport("tree-sitter-zig", tree_sitter_zig_dep.module("tree-sitter-zig"));
     highlight_mod.addImport("tree-sitter-json", json_grammar_mod);
+    highlight_mod.addImport("tree-sitter-python", python_grammar_mod);
 
     const zmd_mod = b.addModule("zmd", .{
         .root_source_file = b.path("src/zmd/zmd.zig"),
@@ -75,6 +97,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("tree_sitter", tree_sitter_dep.module("tree_sitter"));
     exe.root_module.addImport("tree-sitter-zig", tree_sitter_zig_dep.module("tree-sitter-zig"));
     exe.root_module.addImport("tree-sitter-json", json_grammar_mod);
+    exe.root_module.addImport("tree-sitter-python", python_grammar_mod);
     exe.root_module.addImport("zmd", zmd_mod);
     exe.root_module.addImport("zargunaught", zargunaught_dep.module("zargunaught"));
     exe.root_module.addImport("build_options", build_options.createModule());

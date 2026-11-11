@@ -22,6 +22,7 @@ const page_render = @import("./page_render.zig");
 const CSS = @embedFile("assets/style.css");
 const MINISEARCH_JS = @embedFile("assets/minisearch.min.js");
 const SEARCH_JS = @embedFile("assets/search.js");
+const TABS_JS = @embedFile("assets/tabs.js");
 
 // ---------------------------------------------------------------------------
 // Re-exports — the public surface of the render subsystem.
@@ -345,6 +346,11 @@ pub fn renderSite(io: std.Io, allocator: std.mem.Allocator, opts: RenderSiteOpti
         const f = try out_dir.createFile(io, "assets/search.js", .{});
         defer f.close(io);
         try f.writeStreamingAll(io, SEARCH_JS);
+    }
+    {
+        const f = try out_dir.createFile(io, "assets/tabs.js", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, TABS_JS);
     }
     try search_index.writeSearchIndex(&ctx, &out_dir);
 

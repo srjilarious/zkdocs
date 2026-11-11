@@ -266,3 +266,112 @@ pub fn admonitionSyntaxInsideFenceIsNotExtracted() !void {
     try testz.expectTrue(std.mem.indexOf(u8, html, "ZKDOCSADMON") == null);
     try testz.expectTrue(std.mem.indexOf(u8, html, "!!! note") != null);
 }
+
+/// Consecutive `=== "Label"` headers form one tab group: one label button
+/// and one panel per tab, the first selected and the rest hidden, with each
+/// tab's indented body rendered as markdown (here, highlighted code).
+pub fn consecutiveTabHeadersFormOneGroup() !void {
+    const gpa = std.heap.page_allocator;
+
+    const md =
+        \\=== "Zig"
+        \\
+        \\    ```zig
+        \\    eng.quit();
+        \\    ```
+        \\
+        \\=== "Python"
+        \\
+        \\    ```python
+        \\    self.quit()
+        \\    ```
+        \\
+        \\After the tabs.
+    ;
+    const html = try markdown.toHtml(gpa, md);
+    defer gpa.free(html);
+
+    try testz.expectEqual(std.mem.count(u8, html, "class=\"tabbed-set\""), 1);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "class=\"tabbed-label active\" role=\"tab\" aria-selected=\"true\" data-tab=\"Zig\">Zig</button>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "data-tab=\"Python\">Python</button>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "role=\"tabpanel\" data-tab=\"Zig\">") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "role=\"tabpanel\" data-tab=\"Python\" hidden>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "language-zig") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "language-python") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "ZKDOCSADMON") == null);
+    // Text after the group is ordinary paragraph content, outside it.
+    const set_end = std.mem.lastIndexOf(u8, html, "</div></div>").?;
+    const after = std.mem.indexOf(u8, html, "<p>After the tabs.</p>").?;
+    try testz.expectTrue(after > set_end);
+}
+
+/// Tab groups separated by other content stay separate groups.
+pub fn tabGroupsSplitByProseAreSeparate() !void {
+    const gpa = std.heap.page_allocator;
+
+    const md =
+        \\=== "A"
+        \\    one
+        \\
+        \\Between.
+        \\
+        \\=== "A"
+        \\    two
+    ;
+    const html = try markdown.toHtml(gpa, md);
+    defer gpa.free(html);
+
+    try testz.expectEqual(std.mem.count(u8, html, "class=\"tabbed-set\""), 2);
+}
+
+/// Labels are escaped in both the attribute and the button text.
+pub fn tabLabelsAreEscaped() !void {
+    const gpa = std.heap.page_allocator;
+
+    const md =
+        \\=== "<b>&"
+        \\    body
+    ;
+    const html = try markdown.toHtml(gpa, md);
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "data-tab=\"&lt;b&gt;&amp;\">&lt;b&gt;&amp;</button>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<b>") == null);
+}
+
+/// A fenced code block demonstrating tab syntax stays literal.
+pub fn tabSyntaxInsideFenceIsNotExtracted() !void {
+    const gpa = std.heap.page_allocator;
+
+    const md =
+        \\```
+        \\=== "Zig"
+        \\    body
+        \\```
+    ;
+    const html = try markdown.toHtml(gpa, md);
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "tabbed-set") == null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "=== &quot;Zig&quot;") != null or
+        std.mem.indexOf(u8, html, "=== \"Zig\"") != null);
+}
+
+/// An admonition inside a tab renders inside that tab's panel.
+pub fn admonitionInsideTabRenders() !void {
+    const gpa = std.heap.page_allocator;
+
+    const md =
+        \\=== "Zig"
+        \\
+        \\    !!! note
+        \\        Inside a tab.
+    ;
+    const html = try markdown.toHtml(gpa, md);
+    defer gpa.free(html);
+
+    const panel = std.mem.indexOf(u8, html, "role=\"tabpanel\"").?;
+    const admon = std.mem.indexOf(u8, html, "class=\"admonition note\"").?;
+    try testz.expectTrue(admon > panel);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "Inside a tab.") != null);
+}
