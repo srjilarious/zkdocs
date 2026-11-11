@@ -47,3 +47,7 @@ Content tabs show one of several alternatives at a time, such as the same snippe
 The first tab starts selected. Choosing a tab selects the tab with the same label in every group on the page, so a reader who picks "Python" once sees Python everywhere, and the choice is remembered on later pages. A group that has no tab with that label keeps its own selection.
 
 A tab's body is ordinary Markdown: prose, lists, tables and admonitions all work inside one, and a tab holding only a code block shows it edge to edge.
+
+## Links Between Pages
+
+Link to another page by its slug, the `src` path without `.md`: `[Site Configuration](page:reference/pages-config)`. Headings get anchor ids, `h2-` or `h3-` followed by the heading's text lowercased with runs of other characters turned into hyphens, so a link can land on one: `[the color themes](page:reference/pages-config#h2-color-themes)`. Only `##` headings appear in the page's "On this page" list.

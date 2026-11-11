@@ -21,6 +21,7 @@ pub fn toHtml(allocator: std.mem.Allocator, markdown_text: []const u8) anyerror!
         .code = codeFmt,
         .block = blockFmt,
         .h2 = h2Fmt,
+        .h3 = h3Fmt,
         .table = tableFmt,
     });
     defer allocator.free(html);
@@ -482,6 +483,19 @@ fn h2Fmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
         "<h2 id=\"h2-{s}\">{s}</h2>\n",
+        .{ slug, node.content },
+    );
+}
+
+// H3 headings get an anchor id too, so a page can link to one (for
+// example an API reference entry) as `page:slug#h3-<slug>`. They stay out
+// of the page TOC, which lists H2s only.
+fn h3Fmt(allocator: std.mem.Allocator, node: zmd.Node) ![]const u8 {
+    const slug = try slugify(allocator, node.content);
+    defer allocator.free(slug);
+    return std.fmt.allocPrint(
+        allocator,
+        "<h3 id=\"h3-{s}\">{s}</h3>\n",
         .{ slug, node.content },
     );
 }

@@ -59,3 +59,17 @@ pub fn nonEmptySymLinkPreservesText() !void {
     try testz.expectTrue(std.mem.indexOf(u8, html, "CustomText") != null);
     try testz.expectTrue(std.mem.indexOf(u8, html, "<code>") == null);
 }
+
+/// A `page:` link keeps its `#fragment` after the `.html`, so it can reach a
+/// heading on another page.
+pub fn pageLinkKeepsFragmentAfterHtml() !void {
+    const gpa = std.heap.page_allocator;
+
+    const html = try render.resolveInternalLinks(gpa,
+        \\<a href="page:python/app#h3-app-run">run</a> <a href="page:intro">intro</a>
+    , &.{}, "..");
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "href=\"../page/python/app.html#h3-app-run\"") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "href=\"../page/intro.html\"") != null);
+}

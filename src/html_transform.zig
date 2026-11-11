@@ -289,6 +289,7 @@ const AttrMarker = enum { src, sym, mod, guide, page };
 ///   `[text](sym:Container.method)` → method anchor (when first part is not a module)
 ///   `[text](mod:name)`             → module API page (`api/name.html`)
 ///   `[text](page:slug)`            → another page (`page/slug.html`)
+///   `[text](page:slug#h2-usage)`   → a heading on another page
 ///   `[text](guide:slug)`           → another page, backward-compat alias for `page:slug`
 pub fn rewriteAttributes(
     allocator: std.mem.Allocator,
@@ -412,8 +413,11 @@ pub fn rewriteAttributes(
                 try out.appendSlice(allocator, lnk);
             },
             .guide, .page => {
-                // guide: (backward compat) or page:
-                const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/page/{s}.html", .{ prefix, value });
+                // guide: (backward compat) or page:. A `#fragment` stays
+                // after the `.html`, so `page:slug#h2-usage` reaches a
+                // heading on that page.
+                const hash = std.mem.indexOfScalar(u8, value, '#') orelse value.len;
+                const lnk = try std.fmt.allocPrint(allocator, "href=\"{s}/page/{s}.html{s}", .{ prefix, value[0..hash], value[hash..] });
                 defer allocator.free(lnk);
                 try out.appendSlice(allocator, lnk);
             },

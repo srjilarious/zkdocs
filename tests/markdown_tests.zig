@@ -375,3 +375,13 @@ pub fn admonitionInsideTabRenders() !void {
     try testz.expectTrue(admon > panel);
     try testz.expectTrue(std.mem.indexOf(u8, html, "Inside a tab.") != null);
 }
+
+/// H3 headings get an `h3-` anchor id, like H2s get `h2-`.
+pub fn h3HeadingsGetAnchorIds() !void {
+    const gpa = std.heap.page_allocator;
+
+    const html = try markdown.toHtml(gpa, "### App.load_sprite\n");
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<h3 id=\"h3-app-load-sprite\">App.load_sprite</h3>") != null);
+}
