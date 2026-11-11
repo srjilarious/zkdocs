@@ -560,6 +560,24 @@ fn parseLink(
         .href_close,
     };
 
+    // Code-span title: [`name`](href) → code, code_close, title_close, href, text, href_close.
+    // The code's content isn't a token of its own; it sits between the two.
+    const expected_code = &[_]tokens.ElementType{
+        .code,
+        .code_close,
+        .title_close,
+        .href,
+        .text,
+        .href_close,
+    };
+
+    const code_match = blk: {
+        if (index + expected_code.len + 1 >= self.tokens_list.items.len) break :blk false;
+        for (expected_code, index + 1..) |expected, offset|
+            if (self.tokens_list.items[offset].element.type != expected) break :blk false;
+        break :blk true;
+    };
+
     const full_match = blk: {
         if (index + expected_full.len + 1 >= self.tokens_list.items.len) break :blk false;
         for (expected_full, index + 1..) |expected, offset|
@@ -574,14 +592,22 @@ fn parseLink(
         break :blk true;
     };
 
-    if (!full_match and !empty_match) return self.swapText(node, index);
+    if (!full_match and !empty_match and !code_match) return self.swapText(node, index);
 
     const element_type: tokens.ElementType = switch (link_type) {
         .image => .image,
         .link => .link,
     };
 
-    if (full_match) {
+    if (code_match) {
+        const start = node.token.start;
+        const end = self.tokens_list.items[index + expected_code.len + 1].end;
+        node.token = .{ .element = .{ .type = element_type }, .start = start, .end = end };
+        node.href = self.sliceOfInput(index + 5);
+        node.title = self.input[self.tokens_list.items[index + 1].end..self.tokens_list.items[index + 2].start];
+        node.title_code = link_type == .link;
+        for (0..expected_code.len) |offset| self.nullifyToken(index + offset);
+    } else if (full_match) {
         const start = node.token.start;
         const end = self.tokens_list.items[index + expected_full.len + 1].end;
         node.token = .{ .element = .{ .type = element_type }, .start = start, .end = end };

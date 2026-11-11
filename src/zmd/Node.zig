@@ -11,6 +11,9 @@ content: []const u8 = "",
 meta: ?[]const u8 = null,
 href: ?[]const u8 = null,
 title: ?[]const u8 = null,
+/// The link title is one code span, as in [`name`](href): `title` holds
+/// the code's raw text and the formatter wraps it in <code>.
+title_code: bool = false,
 children: ArrayList(*Node),
 index: usize = 0,
 

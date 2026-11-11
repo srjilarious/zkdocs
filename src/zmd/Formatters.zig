@@ -66,6 +66,19 @@ const Default = struct {
     }
 
     pub fn link(allocator: Allocator, node: Node) ![]const u8 {
+        if (node.title_code) {
+            var escaped: std.ArrayList(u8) = .empty;
+            defer escaped.deinit(allocator);
+            for (node.title.?) |c| switch (c) {
+                '<' => try escaped.appendSlice(allocator, "&lt;"),
+                '>' => try escaped.appendSlice(allocator, "&gt;"),
+                '&' => try escaped.appendSlice(allocator, "&amp;"),
+                else => try escaped.append(allocator, c),
+            };
+            return allocPrint(allocator,
+                \\<a href="{s}"><code>{s}</code></a>
+            , .{ node.href.?, escaped.items });
+        }
         return allocPrint(allocator,
             \\<a href="{s}">{s}</a>
         , .{ node.href.?, node.title.? });

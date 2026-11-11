@@ -239,3 +239,23 @@ pub fn tableTokenConstantIsTypedTableAndClearing() !void {
     try testz.expectEqual(zmd.tokens.Table.type, zmd.tokens.ElementType.table);
     try testz.expectTrue(zmd.tokens.Table.clear);
 }
+
+/// A link whose text is one code span renders the code inside the anchor,
+/// in a paragraph and in a table cell.
+pub fn linkWithCodeSpanTitle() !void {
+    const gpa = std.heap.page_allocator;
+
+    const html = try zkdocs.markdown.toHtml(gpa,
+        \\See [`load_sprite`](page:api#h3-x) for <more>.
+        \\
+        \\| A | B |
+        \\|---|---|
+        \\| [`a<b`](page:p) | plain [text](page:q) |
+    );
+    defer gpa.free(html);
+
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<a href=\"page:api#h3-x\"><code>load_sprite</code></a> for") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<a href=\"page:p\"><code>a&lt;b</code></a>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "<a href=\"page:q\">text</a>") != null);
+    try testz.expectTrue(std.mem.indexOf(u8, html, "[<code>") == null);
+}
